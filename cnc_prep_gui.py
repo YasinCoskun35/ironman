@@ -14,6 +14,7 @@ Run:
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import subprocess
@@ -25,6 +26,7 @@ from tkinter import filedialog, messagebox, ttk
 
 HERE = Path(__file__).resolve().parent
 SCRIPT = HERE / "mycode.py"
+SETTINGS_PATH = Path.home() / ".cnc_prep_gui_settings.json"
 
 
 def find_python() -> str:
@@ -84,8 +86,12 @@ class CncPrepGUI(tk.Tk):
         self.proc: subprocess.Popen | None = None
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.suggest_queue: "queue.Queue[str]" = queue.Queue()
+        self._last_report_path: Path | None = None
+        self._last_job_kind: str = "run"
 
         self._build_form()
+        self._load_settings()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._poll_queues()
         self.after(50, self._force_repaint)
 
@@ -143,8 +149,9 @@ class CncPrepGUI(tk.Tk):
                         variable=self.native_size_var).pack(side="left", padx=(16, 0))
 
         row = ttk.Frame(sz); row.pack(fill="x", padx=8, pady=(0, 6))
-        ttk.Button(row, text="Min Güvenli Ölçüyü Hesapla",
-                  command=self._suggest_size).pack(side="left")
+        self.suggest_btn = ttk.Button(row, text="Min Güvenli Ölçüyü Hesapla",
+                                      command=self._suggest_size)
+        self.suggest_btn.pack(side="left")
         self.suggest_label = ttk.Label(row, text="", foreground="#2E6E8E")
         self.suggest_label.pack(side="left", padx=10)
 
@@ -208,6 +215,29 @@ class CncPrepGUI(tk.Tk):
                   command=self._open_output).pack(side="left", padx=8)
         self.status_var = tk.StringVar(value="hazır")
         ttk.Label(runbar, textvariable=self.status_var, foreground="#5B6266").pack(side="right")
+
+        # ---- result summary -----------------------------------------------
+        # A batch (folder input) run prints one line per file in the log, but
+        # that's prose, not something you can scan. This mirrors it as a
+        # proper table straight from the JSON report, so "which files need a
+        # look" is answerable at a glance instead of by re-reading the log.
+        sumframe = ttk.LabelFrame(self, text="Sonuç Özeti")
+        sumframe.pack(fill="x", **pad)
+        self.summary_tree = ttk.Treeview(
+            sumframe, columns=("status", "detail"), show="tree headings", height=4)
+        self.summary_tree.heading("#0", text="Dosya")
+        self.summary_tree.heading("status", text="Durum")
+        self.summary_tree.heading("detail", text="Detay")
+        self.summary_tree.column("#0", width=220, anchor="w")
+        self.summary_tree.column("status", width=90, anchor="w")
+        self.summary_tree.column("detail", width=420, anchor="w")
+        self.summary_tree.tag_configure("ok", foreground="#2F7D4F")
+        self.summary_tree.tag_configure("warn", foreground="#B8860B")
+        self.summary_tree.tag_configure("fail", foreground="#B0311E")
+        self.summary_tree.pack(side="left", fill="x", expand=True, padx=(6, 0), pady=6)
+        sum_scroll = ttk.Scrollbar(sumframe, command=self.summary_tree.yview)
+        sum_scroll.pack(side="right", fill="y", pady=6, padx=(0, 6))
+        self.summary_tree.configure(yscrollcommand=sum_scroll.set)
 
         # ---- log --------------------------------------------------------
         logframe = ttk.LabelFrame(self, text="Kayıt")
@@ -278,6 +308,50 @@ class CncPrepGUI(tk.Tk):
         self.png_dpi.var.set("300")
         self.preview_var.set(True)
 
+    # ------------------------------------------------------------ settings persistence
+
+    def _settings_vars(self) -> dict:
+        """Every field worth remembering between sessions, name -> its Tk variable."""
+        return {
+            "input": self.input_var, "output": self.output_var,
+            "recursive": self.recursive_var,
+            "width_mm": self.width_mm.var, "height_mm": self.height_mm.var,
+            "native_size": self.native_size_var,
+            "min_thickness": self.min_thickness.var, "sharp_tip_deg": self.sharp_tip_deg.var,
+            "kerf_mm": self.kerf_mm.var, "gap_factor": self.gap_factor.var,
+            "fill_gaps": self.fill_gaps_var, "floating": self.floating_var,
+            "no_svg": self.no_svg_var, "no_dxf": self.no_dxf_var, "no_png": self.no_png_var,
+            "canvas_px": self.canvas_px.var, "png_dpi": self.png_dpi.var,
+            "preview": self.preview_var,
+        }
+
+    def _save_settings(self):
+        try:
+            data = {name: var.get() for name, var in self._settings_vars().items()}
+            SETTINGS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception:
+            pass  # losing the remembered settings is not worth interrupting a close/run
+
+    def _load_settings(self):
+        if not SETTINGS_PATH.exists():
+            return
+        try:
+            data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        for name, var in self._settings_vars().items():
+            if name in data:
+                try:
+                    var.set(data[name])
+                except tk.TclError:
+                    pass  # a boolean field that used to be a string, etc. -- skip, don't crash
+
+    def _on_close(self):
+        self._save_settings()
+        if self.proc is not None:
+            self.proc.terminate()
+        self.destroy()
+
     # ------------------------------------------------------------ args
 
     def _common_args(self) -> list[str] | None:
@@ -326,6 +400,13 @@ class CncPrepGUI(tk.Tk):
             args += ["--png-dpi", self.png_dpi.get()]
         if self.preview_var.get():
             args.append("--preview")
+
+        # Always name the report explicitly (not just when not --dry-run) so
+        # a Kuru Kontrol pass can still populate the Sonuç Özeti table below --
+        # mycode.py only writes the JSON report on its own for a real run.
+        report_path = Path(out) / "cnc_prep_report.json"
+        args += ["--report", str(report_path)]
+        self._last_report_path = report_path
         return args
 
     # ------------------------------------------------------------ run
@@ -339,44 +420,68 @@ class CncPrepGUI(tk.Tk):
             return
         if dry_run:
             args.append("--dry-run")
+        self._last_job_kind = "run"
 
         cmd = [find_python(), str(SCRIPT)] + args
         self._log(f"\n$ {' '.join(cmd)}\n")
-        self._set_running(True)
-        threading.Thread(target=self._run_subprocess, args=(cmd,), daemon=True).start()
+        self._launch(cmd, is_suggest=False)
 
-    def _run_subprocess(self, cmd: list[str]):
+    def _launch(self, cmd: list[str], is_suggest: bool):
+        """Start any mycode.py subprocess (a real run or a size search) under
+        the same self.proc handle, so one Durdur button and one running-state
+        toggle cover both -- a long --suggest-size search used to be
+        uncancellable because it ran outside this machinery entirely."""
+        self._set_running(True)
+        if is_suggest:
+            self.suggest_label.configure(text="hesaplanıyor...")
+        threading.Thread(target=self._run_subprocess, args=(cmd, is_suggest), daemon=True).start()
+
+    def _run_subprocess(self, cmd: list[str], is_suggest: bool = False):
         try:
             self.proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1, cwd=str(HERE),
             )
             assert self.proc.stdout is not None
+            found_suggestion = False
             for line in self.proc.stdout:
                 self.log_queue.put(line)
+                if is_suggest and "size:" in line:
+                    self.suggest_queue.put(line.split("size:", 1)[-1].strip())
+                    found_suggestion = True
             code = self.proc.wait()
             self.log_queue.put(f"\n[bitti] çıkış kodu {code}\n")
+            if is_suggest and not found_suggestion and code == 0:
+                self.suggest_queue.put("bulunamadı (log'a bak)")
         except Exception as exc:
             self.log_queue.put(f"\n[hata] {type(exc).__name__}: {exc}\n")
+            if is_suggest:
+                self.suggest_queue.put(f"hata: {exc}")
         finally:
             self.proc = None
             self.log_queue.put("__DONE__")
+            self.after(0, self._save_settings)  # after() is the thread-safe way to call back in from a worker thread
 
     def _cancel(self):
         if self.proc is not None:
             self.proc.terminate()
             self._log("\n[durduruldu]\n")
+            self.suggest_label.configure(text="durduruldu")
 
     def _set_running(self, running: bool):
         state = "disabled" if running else "normal"
         self.run_btn.configure(state=state)
         self.dry_run_btn.configure(state=state)
+        self.suggest_btn.configure(state=state)
         self.cancel_btn.configure(state=("normal" if running else "disabled"))
         self.status_var.set("çalışıyor..." if running else "hazır")
 
     # ------------------------------------------------------------ suggest
 
     def _suggest_size(self):
+        if self.proc is not None:
+            messagebox.showinfo("Cut-Ready", "Zaten bir işlem çalışıyor.")
+            return
         inp = self.input_var.get()
         if not inp:
             messagebox.showerror("Cut-Ready", "Önce bir girdi dosyası seç.")
@@ -389,22 +494,34 @@ class CncPrepGUI(tk.Tk):
         if self.fill_gaps_var.get():
             args.append("--fill-narrow-gaps")
         args += ["--suggest-size", "--dry-run", "-q"]
+        self._last_job_kind = "suggest"
         cmd = [find_python(), str(SCRIPT)] + args
-        self.suggest_label.configure(text="hesaplanıyor...")
-        threading.Thread(target=self._run_suggest_subprocess, args=(cmd,), daemon=True).start()
+        self._launch(cmd, is_suggest=True)
 
-    def _run_suggest_subprocess(self, cmd: list[str]):
+    # ------------------------------------------------------------ summary table
+
+    def _refresh_summary(self):
+        """Rebuild the Sonuç Özeti table from the JSON report of the last run."""
+        for row in self.summary_tree.get_children():
+            self.summary_tree.delete(row)
+        path = self._last_report_path
+        if path is None or not path.exists():
+            return
         try:
-            out = subprocess.run(cmd, capture_output=True, text=True, cwd=str(HERE), timeout=600)
-            text = out.stdout + out.stderr
-            for line in text.splitlines():
-                if "min safe" in line:
-                    self.suggest_queue.put(line.split("size:", 1)[-1].strip())
-                    return
-            self.suggest_queue.put("bulunamadı (log'a bak)")
-            self.log_queue.put(text + "\n__DONE__")
-        except Exception as exc:
-            self.suggest_queue.put(f"hata: {exc}")
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        status_tr = {"ok": ("temiz", "ok"), "ok_with_warnings": ("uyarı", "warn"),
+                    "failed": ("hata", "fail")}
+        for d in data.get("designs", []):
+            name = Path(d.get("source", "?")).name
+            status = d.get("status", "?")
+            label, tag = status_tr.get(status, (status, ""))
+            if status == "failed":
+                detail = (d.get("errors") or ["?"])[0]
+            else:
+                detail = "; ".join(d.get("warnings", [])) or "—"
+            self.summary_tree.insert("", "end", text=name, values=(label, detail), tags=(tag,))
 
     # ------------------------------------------------------------ log / poll
 
@@ -420,6 +537,8 @@ class CncPrepGUI(tk.Tk):
                 line = self.log_queue.get_nowait()
                 if line == "__DONE__":
                     self._set_running(False)
+                    if self._last_job_kind == "run":
+                        self._refresh_summary()
                 else:
                     self._log(line)
         except queue.Empty:

@@ -189,6 +189,7 @@ class Config:
     dry_run: bool = False
     strict: bool = False
     suggest_size: bool = False    # search for & report the minimum safe finished size
+    suggest_jobs: int = 4          # parallel workers for the --suggest-size search
 
     # --- derived (filled at runtime) ---------------------------------------
     mm_per_px: float = field(default=0.0, init=False)
@@ -1656,7 +1657,14 @@ def _check_size_ok(src: Path, base_cfg: Config, width_mm: float,
     return ok, thick_info["thin_regions_remaining"], gap_info["narrow_gap_count"], iou
 
 
-def estimate_min_safe_size(src: Path, base_cfg: Config) -> Dict:
+def _check_size_ok_worker(args: Tuple[str, Config, float]) -> Tuple[float, Tuple[bool, int, int, float]]:
+    """Top-level so it can be pickled by ProcessPoolExecutor. See _worker() for the same pattern."""
+    src_str, base_cfg, width = args
+    cv2.setNumThreads(1)
+    return width, _check_size_ok(Path(src_str), base_cfg, width)
+
+
+def estimate_min_safe_size(src: Path, base_cfg: Config, jobs: int = 4) -> Dict:
     """
     Find the smallest finished width that is *structurally* safe to cut: every
     stroke clears --min-thickness-mm, every gap clears the kerf threshold, and
@@ -1667,10 +1675,14 @@ def estimate_min_safe_size(src: Path, base_cfg: Config) -> Dict:
     risk. The reported size can still carry that cosmetic fuzz; "iou" in each
     checked[] entry is left in the result for exactly that judgement call.
 
-    Search strategy: walk upward in a geometric progression from a small
-    floor until a trial width passes, then binary-search the boundary to a
-    few millimetres. This mirrors exactly what a human would do by hand with
-    repeated --dry-run calls at growing --width-mm, just automated.
+    Search strategy: a geometric progression of candidate widths from a small
+    floor up to a generous ceiling is evaluated *in parallel* (each candidate
+    is fully independent of the others, so there is nothing to gain from
+    doing them one at a time), then the narrow bracket between the largest
+    failure and the smallest pass is refined sequentially to a few
+    millimetres. On a hatching-dense design where a single evaluation can
+    take minutes, running the coarse pass in parallel is the difference
+    between a few minutes and tens of minutes.
     """
     ref_width = base_cfg.width_mm or (base_cfg.height_mm or 400.0)
     lo = max(20.0, ref_width * 0.15)
@@ -1695,19 +1707,36 @@ def estimate_min_safe_size(src: Path, base_cfg: Config) -> Dict:
     aspect = h0_mm / w0_mm if w0_mm else 1.0
     info["aspect_h_over_w"] = round(aspect, 4)
 
-    # Coarse upward walk: find the first width that already passes.
-    width = lo
+    candidates: List[float] = []
+    w = lo
+    while w <= hi:
+        candidates.append(w)
+        w *= 1.35
+
+    results: Dict[float, Tuple[bool, int, int, float]] = {}
+    workers = max(1, min(jobs, len(candidates), os.cpu_count() or 4))
+    if workers > 1 and len(candidates) > 1:
+        payload = [(str(src), base_cfg, cw) for cw in candidates]
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            for cw, res in pool.map(_check_size_ok_worker, payload):
+                results[cw] = res
+    else:
+        for cw in candidates:
+            results[cw] = _check_size_ok(src, base_cfg, cw)
+
+    for cw in candidates:
+        ok, thin, gaps, iou = results[cw]
+        info["checked"].append({"width_mm": round(cw, 1), "ok": ok,
+                                "thin_regions": thin, "narrow_gaps": gaps, "iou": round(iou, 4)})
+
     last_fail_width = lo
     first_pass_width = None
-    while width <= hi:
-        ok, thin, gaps, iou = _check_size_ok(src, base_cfg, width)
-        info["checked"].append({"width_mm": round(width, 1), "ok": ok,
-                                "thin_regions": thin, "narrow_gaps": gaps, "iou": round(iou, 4)})
+    for cw in candidates:
+        ok = results[cw][0]
         if ok:
-            first_pass_width = width
+            first_pass_width = cw
             break
-        last_fail_width = width
-        width *= 1.35
+        last_fail_width = cw
 
     if first_pass_width is None:
         info["error"] = (
@@ -1717,6 +1746,9 @@ def estimate_min_safe_size(src: Path, base_cfg: Config) -> Dict:
         return info
 
     # Binary-search refine between the last known failure and the first pass.
+    # This range is narrow (one geometric step wide) so it stays sequential --
+    # only a handful of evaluations are needed and there is little left to
+    # parallelise.
     low, high = last_fail_width, first_pass_width
     while high - low > tol_mm:
         mid = (low + high) / 2.0
@@ -1754,7 +1786,7 @@ def process_file(src: Path, out_dir: Path, cfg: Config) -> Dict:
 
     try:
         if cfg.suggest_size:
-            report["size_suggestion"] = estimate_min_safe_size(src, cfg)
+            report["size_suggestion"] = estimate_min_safe_size(src, cfg, jobs=cfg.suggest_jobs)
 
         gray, w_mm, h_mm = load_source(src, cfg)
         cfg.mm_per_px = w_mm / gray.shape[1]
@@ -1969,6 +2001,8 @@ def build_parser() -> argparse.ArgumentParser:
     io_g.add_argument("--suggest-size", action="store_true",
                       help="search for and report the minimum finished size (mm & inch) "
                            "at which no forced thickening/gap-filling is needed")
+    io_g.add_argument("--suggest-jobs", type=int, default=4,
+                      help="parallel worker processes for the --suggest-size search")
 
     sc = p.add_argument_group("scale")
     sc.add_argument("--width-mm", type=float, default=None,
@@ -2078,6 +2112,7 @@ def config_from_args(a: argparse.Namespace) -> Config:
         dry_run=a.dry_run,
         strict=a.strict,
         suggest_size=a.suggest_size,
+        suggest_jobs=a.suggest_jobs,
     )
 
 
