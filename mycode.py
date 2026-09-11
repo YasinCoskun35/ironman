@@ -538,27 +538,41 @@ def resolve_physical_size(cfg: Config, aspect: float,
 
 DEFAULT_SMOOTH_MM = 0.25       # must track Config.smooth_mm's default
 DEFAULT_SIMPLIFY_MM = 0.15     # must track Config.simplify_mm's default
-_AUTO_SMOOTH_K = 4.5           # calibrated against a 2041px source upscaled to 4400px
-_AUTO_SIMPLIFY_K = 3.0         # (see moon.png case study) -- both are "how many native-pixel-
-                                # widths of tolerance" the fix needs, not physical constants
+_AUTO_SIMPLIFY_K = 3.0         # calibrated against a 2041px source upscaled to 4400px
+                                # (see moon.png case study) -- "how many native-pixel-widths
+                                # of tolerance" the fix needs, not a physical constant
+
+# smooth_mm is deliberately NOT auto-boosted here any more. It first looked like
+# the fix (moon.png's staircase did clean up), but dejag() runs a *global*
+# Gaussian blur across the whole raster before any contour exists -- so on a
+# design that mixes a big silhouette with a fine intentional detail line (a
+# reclining figure with a thin engraved neck/collar line, for instance), a
+# large smooth_mm blurs straight across that line and the 50%-rethreshold
+# erases it completely, silently deleting real artwork. simplify_contour(),
+# by contrast, only simplifies points *within* an already-traced contour, so
+# boosting --simplify-mm cleans the same upsampling staircase without ever
+# being able to merge two separate shapes. Confirmed on both moon.png (thick
+# silhouette) and a reclining-figure design with a thin neck line: simplify_mm
+# alone matches the old smooth+simplify combo's edge quality with none of the
+# detail loss.
 
 
 def auto_tune_smoothing(cfg: Config, native_w_px: int, w_mm: float) -> Dict:
     """
     Detect a source raster that is coarser than the pipeline's own working
-    resolution, and loosen --smooth-mm/--simplify-mm to compensate.
+    resolution, and loosen --simplify-mm to compensate.
 
     A PNG's detail is capped by its native pixel grid. When the requested
     finished size needs more working pixels than that grid has, resample_to_
     work_res() has to upsample it (cv2.resize), which leaves a staircase on
-    every edge -- and the *default* smoothing/simplification tolerances were
-    tuned for well-resolved sources, so they treat that staircase as real
-    geometry and preserve it instead of removing it. The fix is not a sharper
-    algorithm; it's telling dejag()/simplify_contour() the true noise floor,
-    which is the size of one native source pixel in mm.
+    every edge -- and the *default* simplification tolerance was tuned for
+    well-resolved sources, so it treats that staircase as real geometry and
+    preserves it instead of removing it. The fix is not a sharper algorithm;
+    it's telling simplify_contour() the true noise floor, which is the size
+    of one native source pixel in mm.
 
-    Only acts when the caller hasn't already overridden the defaults --
-    an explicit --smooth-mm/--simplify-mm always wins.
+    Only acts when the caller hasn't already overridden the default --
+    an explicit --simplify-mm always wins.
     """
     info: Dict = {"applied": False}
     if native_w_px <= 0 or not w_mm:
@@ -572,15 +586,13 @@ def auto_tune_smoothing(cfg: Config, native_w_px: int, w_mm: float) -> Dict:
     if native_px_mm <= working_px_mm * 1.05:
         return info  # source already resolves at least as fine as our working grid
 
-    if cfg.smooth_mm != DEFAULT_SMOOTH_MM or cfg.simplify_mm != DEFAULT_SIMPLIFY_MM:
+    if cfg.simplify_mm != DEFAULT_SIMPLIFY_MM:
         info["skipped_explicit_override"] = True
         return info
 
-    new_smooth = round(max(cfg.smooth_mm, native_px_mm * _AUTO_SMOOTH_K), 3)
     new_simplify = round(max(cfg.simplify_mm, native_px_mm * _AUTO_SIMPLIFY_K), 3)
-    cfg.smooth_mm = new_smooth
     cfg.simplify_mm = new_simplify
-    info.update({"applied": True, "smooth_mm": new_smooth, "simplify_mm": new_simplify})
+    info.update({"applied": True, "simplify_mm": new_simplify})
     return info
 
 
@@ -2194,7 +2206,7 @@ def log_result(rep: Dict, quiet: bool) -> None:
     if aq and aq.get("applied") and not quiet:
         print(f"       quality: source is low-resolution for this size "
               f"({aq['native_px_mm']}mm/px vs {aq['working_px_mm']}mm/px working) — "
-              f"auto-set --smooth-mm {aq['smooth_mm']} --simplify-mm {aq['simplify_mm']}")
+              f"auto-set --simplify-mm {aq['simplify_mm']}")
     if quiet:
         return
     name = Path(rep["source"]).name
