@@ -130,45 +130,6 @@ class TestResolvePhysicalSize:
 
 
 # ---------------------------------------------------------------------------
-# auto_tune_smoothing -- the moon.png case study, pinned down as a test
-# ---------------------------------------------------------------------------
-
-class TestAutoTuneSmoothing:
-    def test_low_res_source_gets_loosened(self):
-        # moon.png: 550mm design, 2041px native width -> 0.2695mm/px, coarser
-        # than the 0.125mm/px (8px/mm) working grid.
-        cfg = m.Config(width_mm=550.0, work_res=8.0)
-        info = m.auto_tune_smoothing(cfg, native_w_px=2041, w_mm=550.0)
-        assert info["applied"] is True
-        assert cfg.smooth_mm > m.DEFAULT_SMOOTH_MM
-        assert cfg.simplify_mm > m.DEFAULT_SIMPLIFY_MM
-        # calibrated case: should land close to the hand-tuned 1.2 / 0.8
-        assert cfg.smooth_mm == pytest.approx(1.2, abs=0.1)
-        assert cfg.simplify_mm == pytest.approx(0.8, abs=0.1)
-
-    def test_high_res_source_untouched(self):
-        # bearready.png: 550mm design, 6495px native width -> 0.0847mm/px,
-        # already finer than the working grid -- nothing to fix.
-        cfg = m.Config(width_mm=550.0, work_res=8.0)
-        info = m.auto_tune_smoothing(cfg, native_w_px=6495, w_mm=550.0)
-        assert info["applied"] is False
-        assert cfg.smooth_mm == m.DEFAULT_SMOOTH_MM
-        assert cfg.simplify_mm == m.DEFAULT_SIMPLIFY_MM
-
-    def test_explicit_override_is_respected(self):
-        cfg = m.Config(width_mm=550.0, work_res=8.0, smooth_mm=0.5)
-        info = m.auto_tune_smoothing(cfg, native_w_px=2041, w_mm=550.0)
-        assert info["applied"] is False
-        assert info["skipped_explicit_override"] is True
-        assert cfg.smooth_mm == 0.5  # untouched, exactly what the caller set
-
-    def test_no_native_width_is_a_noop(self):
-        cfg = m.Config(width_mm=550.0)
-        info = m.auto_tune_smoothing(cfg, native_w_px=0, w_mm=550.0)
-        assert info["applied"] is False
-
-
-# ---------------------------------------------------------------------------
 # polygon helpers used by the vectoriser
 # ---------------------------------------------------------------------------
 

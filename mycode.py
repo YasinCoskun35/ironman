@@ -533,58 +533,6 @@ def resolve_physical_size(cfg: Config, aspect: float,
 
 
 # ---------------------------------------------------------------------------
-# Auto quality tuning for under-resolved sources
-# ---------------------------------------------------------------------------
-
-DEFAULT_SMOOTH_MM = 0.25       # must track Config.smooth_mm's default
-DEFAULT_SIMPLIFY_MM = 0.15     # must track Config.simplify_mm's default
-_AUTO_SMOOTH_K = 4.5           # calibrated against a 2041px source upscaled to 4400px
-_AUTO_SIMPLIFY_K = 3.0         # (see moon.png case study) -- both are "how many native-pixel-
-                                # widths of tolerance" the fix needs, not physical constants
-
-
-def auto_tune_smoothing(cfg: Config, native_w_px: int, w_mm: float) -> Dict:
-    """
-    Detect a source raster that is coarser than the pipeline's own working
-    resolution, and loosen --smooth-mm/--simplify-mm to compensate.
-
-    A PNG's detail is capped by its native pixel grid. When the requested
-    finished size needs more working pixels than that grid has, resample_to_
-    work_res() has to upsample it (cv2.resize), which leaves a staircase on
-    every edge -- and the *default* smoothing/simplification tolerances were
-    tuned for well-resolved sources, so they treat that staircase as real
-    geometry and preserve it instead of removing it. The fix is not a sharper
-    algorithm; it's telling dejag()/simplify_contour() the true noise floor,
-    which is the size of one native source pixel in mm.
-
-    Only acts when the caller hasn't already overridden the defaults --
-    an explicit --smooth-mm/--simplify-mm always wins.
-    """
-    info: Dict = {"applied": False}
-    if native_w_px <= 0 or not w_mm:
-        return info
-
-    working_px_mm = 1.0 / cfg.work_res
-    native_px_mm = w_mm / native_w_px
-    info["native_px_mm"] = round(native_px_mm, 4)
-    info["working_px_mm"] = round(working_px_mm, 4)
-
-    if native_px_mm <= working_px_mm * 1.05:
-        return info  # source already resolves at least as fine as our working grid
-
-    if cfg.smooth_mm != DEFAULT_SMOOTH_MM or cfg.simplify_mm != DEFAULT_SIMPLIFY_MM:
-        info["skipped_explicit_override"] = True
-        return info
-
-    new_smooth = round(max(cfg.smooth_mm, native_px_mm * _AUTO_SMOOTH_K), 3)
-    new_simplify = round(max(cfg.simplify_mm, native_px_mm * _AUTO_SIMPLIFY_K), 3)
-    cfg.smooth_mm = new_smooth
-    cfg.simplify_mm = new_simplify
-    info.update({"applied": True, "smooth_mm": new_smooth, "simplify_mm": new_simplify})
-    return info
-
-
-# ---------------------------------------------------------------------------
 # Stage 1 — binarisation & denoise
 # ---------------------------------------------------------------------------
 
@@ -1683,7 +1631,6 @@ def _check_size_ok(src: Path, base_cfg: Config, width_mm: float,
     trial = dataclass_replace(base_cfg, width_mm=width_mm, height_mm=None)
     gray, w_mm, h_mm = load_source(src, trial)
     trial.mm_per_px = w_mm / gray.shape[1]
-    auto_tune_smoothing(trial, gray.shape[1], w_mm)
 
     mask = binarize(gray, trial)
     if not mask.any() or float((mask > 0).mean()) > 0.999:
@@ -1843,7 +1790,6 @@ def process_file(src: Path, out_dir: Path, cfg: Config) -> Dict:
 
         gray, w_mm, h_mm = load_source(src, cfg)
         cfg.mm_per_px = w_mm / gray.shape[1]
-        report["auto_quality"] = auto_tune_smoothing(cfg, gray.shape[1], w_mm)
 
         if int(gray.max()) - int(gray.min()) < 8:
             raise ValueError("image is a single flat tone — there is no artwork to cut")
@@ -2190,11 +2136,6 @@ def log_result(rep: Dict, quiet: bool) -> None:
     # the one thing the caller explicitly asked to compute.
     if rep.get("size_suggestion"):
         log_size_suggestion(Path(rep["source"]).name, rep["size_suggestion"])
-    aq = rep.get("auto_quality")
-    if aq and aq.get("applied") and not quiet:
-        print(f"       quality: source is low-resolution for this size "
-              f"({aq['native_px_mm']}mm/px vs {aq['working_px_mm']}mm/px working) — "
-              f"auto-set --smooth-mm {aq['smooth_mm']} --simplify-mm {aq['simplify_mm']}")
     if quiet:
         return
     name = Path(rep["source"]).name
