@@ -62,9 +62,9 @@ Bir kere yapılır. Aşağıdaki örneklerde proje klasörünün adı `image`.
 1. [python.org](https://www.python.org/downloads/)'dan Python 3.11+ kur — kurulum ekranında
    **"Add python.exe to PATH"** kutusunu işaretle. Tkinter zaten dahildir, ekstra kurulum gerekmez.
 
-2. SVG okumak için [Inkscape](https://inkscape.org/release/)'i kur (kurulum sırasında PATH'e ekle
-   seçeneğini işaretle) — cairosvg'nin Windows'ta gerektirdiği GTK kurulumundan çok daha kolay,
-   script otomatik algılar.
+2. SVG okumak için [Inkscape](https://inkscape.org/release/)'i kur. **PATH'e eklemene gerek yok** —
+   script Inkscape'i `Program Files` altında kendisi bulur. cairosvg'nin Windows'ta gerektirdiği
+   GTK kurulumundan çok daha kolay. (Sadece PNG ile çalışacaksan bu adımı atlayabilirsin.)
 
 3. PowerShell'de proje klasöründe sanal ortam kur:
 
@@ -160,7 +160,7 @@ Karşılaşman muhtemel şeyler, sırayla ne yapacağın:
 | macOS | Pencere tamamen siyah açılıyor (`No module named '_tkinter'`) | `brew install python-tk@3.14` kur, uygulamayı kapatıp tekrar aç. |
 | macOS | Çift tıklayınca "bilinmeyen geliştirici" uyarısı | `run_gui.command` dosyasına sağ tık → **Aç** → açılan uyarıda yine **Aç**. Bir kere yaptıktan sonra sıradan çift tık yeterli olur. |
 | Windows | PowerShell "python tanınmıyor" diyor | Python'u python.org'dan "Add python.exe to PATH" işaretli olarak yeniden kur. |
-| Her ikisi | "No SVG rasteriser available" | SVG girdisi var ama ne cairosvg ne Inkscape bulunamadı. macOS'ta `brew install cairo pango gdk-pixbuf libffi`, Windows'ta Inkscape kur ve PATH'e ekle. |
+| Her ikisi | "No SVG rasteriser available" | SVG girdisi var ama ne cairosvg ne Inkscape bulunamadı. Windows'ta [Inkscape](https://inkscape.org/release/) kur (PATH'e eklemene gerek yok, script Program Files'ta bulur); macOS'ta `brew install cairo pango gdk-pixbuf libffi` veya `brew install inkscape`. Alternatif: tasarımı SVG yerine PNG olarak ver. |
 | Her ikisi | "Zaten bir işlem çalışıyor" mesajı | Önceki Çalıştır/Kuru Kontrol henüz bitmedi. Kayıt penceresinde `[bitti]` satırını bekle, ya da **Durdur**'a bas. |
 | Her ikisi | Öneri kutusu "bulunamadı" yazıyor | Girdi dosyası seçilmemiş olabilir, ya da dosya çok yoğun detaylıysa hesaplama birkaç dakika sürebilir — Kayıt penceresinde ilerlemeyi izleyebilirsin. |
 

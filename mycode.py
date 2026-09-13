@@ -408,6 +408,65 @@ def read_svg_intrinsic_size(path: Path) -> Optional[Tuple[float, float]]:
     return None
 
 
+def find_svg_tool(name: str) -> Optional[str]:
+    """
+    Locate an SVG rasteriser executable.
+
+    PATH first, then the places each platform's installer actually puts it.
+    Inkscape's Windows installer does not add itself to PATH, so shutil.which()
+    alone reports "not installed" on a machine where it plainly is -- which is
+    the single most common reason this tool refuses SVG input on Windows.
+    """
+    found = shutil.which(name)
+    if found:
+        return found
+
+    candidates: List[Path] = []
+    if name == "inkscape":
+        if os.name == "nt":
+            roots = [os.environ.get("ProgramFiles", r"C:\Program Files"),
+                     os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                     os.environ.get("LOCALAPPDATA", "")]
+            for root in roots:
+                if not root:
+                    continue
+                candidates += [Path(root) / "Inkscape" / "bin" / "inkscape.exe",
+                               Path(root) / "Inkscape" / "inkscape.exe",
+                               Path(root) / "Programs" / "Inkscape" / "bin" / "inkscape.exe"]
+        elif sys.platform == "darwin":
+            candidates.append(Path("/Applications/Inkscape.app/Contents/MacOS/inkscape"))
+
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return None
+
+
+def _svg_tool_help() -> str:
+    """Installation advice for the platform actually running, not for Debian."""
+    if os.name == "nt":
+        return (
+            "No SVG rasteriser available. On Windows the easiest fix is Inkscape:\n"
+            "  1. Install it from https://inkscape.org/release/\n"
+            "  2. Re-run -- this tool now finds it in Program Files even if it is\n"
+            "     not on PATH, so no PATH editing is needed.\n"
+            "Alternatively: pip install cairosvg (needs the GTK runtime, more work),\n"
+            "or export your design as PNG instead of SVG."
+        )
+    if sys.platform == "darwin":
+        return (
+            "No SVG rasteriser available. Install one of:\n"
+            "  pip install cairosvg   (plus: brew install cairo pango gdk-pixbuf libffi)\n"
+            "  brew install inkscape"
+        )
+    return (
+        "No SVG rasteriser available. Install one of:\n"
+        "  pip install cairosvg   (plus native cairo: apt-get install libcairo2)\n"
+        "  apt-get install librsvg2-bin      # provides rsvg-convert\n"
+        "  apt-get install inkscape"
+    )
+
+
 def rasterize_svg(path: Path, out_w_px: int, out_h_px: int) -> np.ndarray:
     """
     Render an SVG to a grayscale numpy array at the requested pixel size.
@@ -431,18 +490,19 @@ def rasterize_svg(path: Path, out_w_px: int, out_h_px: int) -> np.ndarray:
             except OSError:
                 pass
 
-    for exe, argv in (
-        ("rsvg-convert", ["rsvg-convert", "-w", str(out_w_px), "-h", str(out_h_px),
+    for name, argv in (
+        ("rsvg-convert", ["{exe}", "-w", str(out_w_px), "-h", str(out_h_px),
                           "-b", "white", "-o", "{out}", str(path)]),
-        ("inkscape", ["inkscape", str(path), "--export-type=png",
+        ("inkscape", ["{exe}", str(path), "--export-type=png",
                       f"--export-width={out_w_px}", f"--export-height={out_h_px}",
                       "--export-background=white", "--export-filename={out}"]),
     ):
-        if shutil.which(exe):
+        exe = find_svg_tool(name)
+        if exe:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                 tmp_path = tmp.name
             try:
-                cmd = [a.replace("{out}", tmp_path) for a in argv]
+                cmd = [a.replace("{exe}", exe).replace("{out}", tmp_path) for a in argv]
                 subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL, timeout=300)
                 return load_raster(Path(tmp_path))
@@ -454,12 +514,7 @@ def rasterize_svg(path: Path, out_w_px: int, out_h_px: int) -> np.ndarray:
                 except OSError:
                     pass
 
-    raise RuntimeError(
-        "No SVG rasteriser available. Install one of:\n"
-        "  pip install cairosvg   (plus native cairo: apt-get install libcairo2)\n"
-        "  apt-get install librsvg2-bin      # provides rsvg-convert\n"
-        "  apt-get install inkscape"
-    )
+    raise RuntimeError(_svg_tool_help())
 
 
 def load_raster(path: Path) -> np.ndarray:
@@ -2178,9 +2233,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     if any(f.suffix.lower() in VECTOR_EXT for f in files) and not HAS_CAIROSVG:
-        if not (shutil.which("rsvg-convert") or shutil.which("inkscape")):
-            print("warning: SVG inputs found but no rasteriser available "
-                  "(pip install cairosvg). Those files will fail.", file=sys.stderr)
+        if not (find_svg_tool("rsvg-convert") or find_svg_tool("inkscape")):
+            print("warning: SVG inputs found but no rasteriser available — "
+                  "those files will fail.\n" + _svg_tool_help(), file=sys.stderr)
     if not (HAS_XIMGPROC or HAS_SKIMAGE) and not args.quiet:
         print("note: neither cv2.ximgproc nor scikit-image found — using the slow "
               "pure-python skeletoniser. `pip install opencv-contrib-python` for a "
