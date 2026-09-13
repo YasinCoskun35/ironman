@@ -408,31 +408,70 @@ def read_svg_intrinsic_size(path: Path) -> Optional[Tuple[float, float]]:
     return None
 
 
+def _windows_registry_exe(exe_name: str) -> Optional[str]:
+    """
+    Ask Windows itself where an executable lives.
+
+    Installers register their binary under App Paths, which is how the Start
+    menu and `start inkscape` resolve it without PATH. This catches installs in
+    non-default folders -- scoop, chocolatey, a custom drive -- that no amount
+    of guessing at Program Files would find.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import winreg  # noqa: PLC0415 -- Windows-only, must not be imported elsewhere
+    except ImportError:
+        return None
+
+    subkey = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exe_name}"
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for access in (winreg.KEY_READ, winreg.KEY_READ | winreg.KEY_WOW64_32KEY):
+            try:
+                with winreg.OpenKey(root, subkey, 0, access) as key:
+                    value, _ = winreg.QueryValueEx(key, None)
+                    exe = Path(str(value).strip('"'))
+                    if exe.exists():
+                        return str(exe)
+            except OSError:
+                continue
+    return None
+
+
 def find_svg_tool(name: str) -> Optional[str]:
     """
     Locate an SVG rasteriser executable.
 
-    PATH first, then the places each platform's installer actually puts it.
-    Inkscape's Windows installer does not add itself to PATH, so shutil.which()
-    alone reports "not installed" on a machine where it plainly is -- which is
-    the single most common reason this tool refuses SVG input on Windows.
+    PATH first, then the Windows registry, then the places each platform's
+    installer actually puts it. Inkscape's Windows installer does not add
+    itself to PATH, so shutil.which() alone reports "not installed" on a
+    machine where it plainly is -- which is the single most common reason
+    this tool refuses SVG input on Windows.
     """
     found = shutil.which(name)
     if found:
         return found
+
+    from_registry = _windows_registry_exe(f"{name}.exe")
+    if from_registry:
+        return from_registry
 
     candidates: List[Path] = []
     if name == "inkscape":
         if os.name == "nt":
             roots = [os.environ.get("ProgramFiles", r"C:\Program Files"),
                      os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
-                     os.environ.get("LOCALAPPDATA", "")]
+                     os.environ.get("LOCALAPPDATA", ""),
+                     os.environ.get("USERPROFILE", "")]
             for root in roots:
                 if not root:
                     continue
                 candidates += [Path(root) / "Inkscape" / "bin" / "inkscape.exe",
                                Path(root) / "Inkscape" / "inkscape.exe",
-                               Path(root) / "Programs" / "Inkscape" / "bin" / "inkscape.exe"]
+                               Path(root) / "Programs" / "Inkscape" / "bin" / "inkscape.exe",
+                               Path(root) / "scoop" / "apps" / "inkscape" / "current" / "bin" / "inkscape.exe"]
+            choco = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "chocolatey" / "bin" / "inkscape.exe"
+            candidates.append(choco)
         elif sys.platform == "darwin":
             candidates.append(Path("/Applications/Inkscape.app/Contents/MacOS/inkscape"))
 
@@ -2064,6 +2103,9 @@ def build_parser() -> argparse.ArgumentParser:
                            "at which no forced thickening/gap-filling is needed")
     io_g.add_argument("--suggest-jobs", type=int, default=4,
                       help="parallel worker processes for the --suggest-size search")
+    io_g.add_argument("--doctor", action="store_true",
+                      help="print what this machine can do (SVG rasterisers, OpenCV "
+                           "build, interpreter) and exit; needs no -i/-o")
 
     sc = p.add_argument_group("scale")
     sc.add_argument("--width-mm", type=float, default=None,
@@ -2218,7 +2260,42 @@ def log_result(rep: Dict, quiet: bool) -> None:
         print(f"       ! {w}")
 
 
+def run_doctor() -> int:
+    """
+    Report what this machine can and cannot do, so a failure can be diagnosed
+    without a back-and-forth. Deliberately runs before argument parsing, since
+    the point is to work when nothing else does.
+    """
+    print("cnc_prep doctor")
+    print(f"  platform        : {sys.platform} (os.name={os.name})")
+    print(f"  python          : {sys.version.split()[0]}")
+    print(f"  interpreter     : {sys.executable}")
+    print(f"  opencv          : {cv2.__version__}")
+    print(f"  cv2.ximgproc    : {'yes' if HAS_XIMGPROC else 'no (slower thinning)'}")
+    print(f"  scikit-image    : {'yes' if HAS_SKIMAGE else 'no'}")
+    print()
+    print("  SVG rasterisers (needed only for .svg input):")
+    print(f"    cairosvg      : {'yes' if HAS_CAIROSVG else 'no'}")
+    for tool in ("inkscape", "rsvg-convert"):
+        print(f"    {tool:<14}: {find_svg_tool(tool) or 'NOT FOUND'}")
+
+    svg_ok = HAS_CAIROSVG or find_svg_tool("inkscape") or find_svg_tool("rsvg-convert")
+    print()
+    if svg_ok:
+        print("  => SVG input: OK")
+    else:
+        print("  => SVG input: WILL FAIL")
+        print()
+        print(_svg_tool_help())
+    print("  => PNG/JPG input: OK")
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    # Checked before parsing: --doctor must work even when -i/-o are missing.
+    if "--doctor" in list(sys.argv[1:] if argv is None else argv):
+        return run_doctor()
+
     args = build_parser().parse_args(argv)
     cfg = config_from_args(args)
 
