@@ -653,23 +653,30 @@ def fill_small_holes(mask: np.ndarray, min_area_px: float) -> Tuple[np.ndarray, 
     return cv2.bitwise_or(mask, apply_label_lut(labels, small)), filled
 
 
-def resample_to_work_res(mask: np.ndarray, cfg: Config, w_mm: float) -> np.ndarray:
+def resample_to_work_res(gray: np.ndarray, cfg: Config, w_mm: float) -> np.ndarray:
     """
-    Rescale so that exactly cfg.work_res pixels map to one millimetre.
+    Rescale the *grayscale* source so that exactly cfg.work_res pixels map to
+    one millimetre. Working at a fixed px/mm is what lets every later threshold
+    be a physical number.
 
-    Working at a fixed px/mm is what lets every later threshold be a physical
-    number. Resampling is done on the binary mask via area/cubic interpolation
-    followed by a re-threshold, which also softens aliasing.
+    This must run BEFORE binarize(), never after. A binary mask carries no
+    sub-pixel edge information, so upsampling one can only ever produce a
+    staircase: every diagonal becomes a flight of steps one source-pixel
+    tall, and those steps survive the whole rest of the pipeline as burrs on
+    the cut edge. The grayscale source still has its anti-aliased edge ramps,
+    and interpolating *those* before thresholding reconstructs a smooth
+    boundary at the working resolution -- the difference is stark on the AI
+    exports this tool is fed, which are routinely 3x coarser than the raster
+    a 550 mm part needs.
     """
-    h_px, w_px = mask.shape[:2]
+    h_px, w_px = gray.shape[:2]
     target_w = int(round(w_mm * cfg.work_res))
     target_w = max(32, min(target_w, cfg.max_dim_px))
     if target_w == w_px:
-        return mask
+        return gray
     target_h = max(32, int(round(h_px * target_w / w_px)))
     interp = cv2.INTER_AREA if target_w < w_px else cv2.INTER_CUBIC
-    resized = cv2.resize(mask, (target_w, target_h), interpolation=interp)
-    return as_mask(resized > 127)
+    return cv2.resize(gray, (target_w, target_h), interpolation=interp)
 
 
 def dejag(mask: np.ndarray, cfg: Config) -> np.ndarray:
@@ -1630,6 +1637,7 @@ def _check_size_ok(src: Path, base_cfg: Config, width_mm: float,
     """
     trial = dataclass_replace(base_cfg, width_mm=width_mm, height_mm=None)
     gray, w_mm, h_mm = load_source(src, trial)
+    gray = resample_to_work_res(gray, trial, w_mm)
     trial.mm_per_px = w_mm / gray.shape[1]
 
     mask = binarize(gray, trial)
@@ -1637,8 +1645,6 @@ def _check_size_ok(src: Path, base_cfg: Config, width_mm: float,
         return False, -1, -1, 0.0
 
     mask, _ = denoise(mask, trial)
-    mask = resample_to_work_res(mask, trial, w_mm)
-    trial.mm_per_px = w_mm / mask.shape[1]
     mask = dejag(mask, trial)
 
     mask, _, _, _ = handle_floating(mask, trial)
@@ -1789,10 +1795,12 @@ def process_file(src: Path, out_dir: Path, cfg: Config) -> Dict:
             report["size_suggestion"] = estimate_min_safe_size(src, cfg, jobs=cfg.suggest_jobs)
 
         gray, w_mm, h_mm = load_source(src, cfg)
-        cfg.mm_per_px = w_mm / gray.shape[1]
 
         if int(gray.max()) - int(gray.min()) < 8:
             raise ValueError("image is a single flat tone — there is no artwork to cut")
+
+        gray = resample_to_work_res(gray, cfg, w_mm)   # grayscale first -- see the docstring
+        cfg.mm_per_px = w_mm / gray.shape[1]
 
         mask = binarize(gray, cfg)
         if not mask.any():
@@ -1803,8 +1811,6 @@ def process_file(src: Path, out_dir: Path, cfg: Config) -> Dict:
                              "or a fixed --threshold")
 
         mask, denoise_stats = denoise(mask, cfg)
-        mask = resample_to_work_res(mask, cfg, w_mm)
-        cfg.mm_per_px = w_mm / mask.shape[1]          # recompute after resampling
         mask = dejag(mask, cfg)
 
         base = mask.copy()
