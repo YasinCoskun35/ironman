@@ -163,6 +163,8 @@ class Config:
     min_thickness_mm: float = 2.0         # thinnest surviving metal
     sharp_tip_deg: float = 60.0           # sharpest tip angle the torch may attempt
     thicken_passes: int = 3               # convergence iterations
+    thicken_mode: str = "taper"           # taper (keep the stroke's profile) | uniform
+    tip_policy: str = "round"             # round (grow the tip) | trim (end the stroke early)
     kerf_mm: float = 1.2                  # torch/beam kerf (plasma ~1.2, laser ~0.15)
     gap_factor: float = 1.5               # slots below kerf*factor are flagged
     fill_narrow_gaps: bool = False        # auto-close doomed slots
@@ -935,6 +937,48 @@ def sharp_tip_tolerance(tip_angle_deg: float) -> float:
     return max(0.05, 1.0 / math.sin(theta) - 1.0)
 
 
+def joins_two_cores(residue: np.ndarray, labels: np.ndarray, n_labels: int,
+                    core: np.ndarray) -> np.ndarray:
+    """
+    Per-residue-region flag: does this thin region bridge two separate lumps of
+    safe metal?
+
+    Such a region is a neck -- whatever its length, it is where the finished
+    part snaps, so it has to be repaired no matter how the tip tolerance would
+    judge its depth. A region touching one core lump (or none) is a free end.
+
+    Found by walking the four-neighbour boundary once and collecting which core
+    component sits across it, rather than cropping per region: on artwork with
+    a few thousand slivers the per-region loop is most of the stage's runtime.
+    """
+    flag = np.zeros(n_labels, dtype=bool)
+    if n_labels <= 1 or not core.any():
+        return flag
+    n_core, core_labels = cv2.connectedComponents(core, connectivity=8)
+    if n_core <= 2:  # background + a single lump: nothing to bridge
+        return flag
+
+    pairs = []
+    for dy, dx in ((0, 1), (1, 0)):
+        h, w = labels.shape
+        near = (slice(0, h - dy), slice(0, w - dx))
+        far = (slice(dy, h), slice(dx, w))
+        for res_side, core_side in ((near, far), (far, near)):
+            res_ids = labels[res_side]
+            core_ids = core_labels[core_side]
+            touching = (res_ids > 0) & (core_ids > 0)
+            if touching.any():
+                pairs.append(np.stack((res_ids[touching], core_ids[touching]), axis=1))
+    if not pairs:
+        return flag
+
+    # One row per (region, adjacent core lump); a region listed twice bridges.
+    distinct = np.unique(np.concatenate(pairs, axis=0), axis=0)
+    region_ids, counts = np.unique(distinct[:, 0], return_counts=True)
+    flag[region_ids[counts >= 2]] = True
+    return flag
+
+
 def analyze_thin_features(mask: np.ndarray, r_min_px: float,
                           tip_tol: float) -> Tuple[np.ndarray, List[float]]:
     """
@@ -969,7 +1013,15 @@ def analyze_thin_features(mask: np.ndarray, r_min_px: float,
 
     if core_present:
         reach = group_max(labels, reach_map, sel, n)
-        is_thin = reach > limit
+        # The tip tolerance answers "is this sliver deep enough to matter?",
+        # which is the right question for a dead-end spike and the wrong one
+        # for a neck. A neck joins two lumps of safe metal, so however short it
+        # is, it is the width the part breaks at; a spike is a free end that
+        # can taper to nothing without weakening anything. Judging both by
+        # depth alone forces a choice between beading every spike (high
+        # --sharp-tip-deg) and shipping hairline necks (low). Splitting them
+        # lets the tolerance govern spikes only, and necks get repaired always.
+        is_thin = (reach > limit) | joins_two_cores(residue, labels, n, core)
     else:
         # No safe core anywhere: the entire design is sub-minimum.
         is_thin = np.ones(n, dtype=bool)
@@ -984,15 +1036,108 @@ def analyze_thin_features(mask: np.ndarray, r_min_px: float,
     return thin, widths
 
 
+def split_thin_by_role(thin: np.ndarray, mask: np.ndarray,
+                       r_min_px: float) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Split already-flagged thin material into (necks, free ends).
+
+    A neck carries load between two lumps of safe metal and can only ever be
+    grown. A free end carries nothing, which means there is a second repair
+    available for it: ending the stroke early instead of fattening it.
+    """
+    empty = np.zeros_like(mask)
+    if not thin.any():
+        return empty, empty
+    core = cv2.morphologyEx(mask, cv2.MORPH_OPEN, disk(int(math.ceil(r_min_px))))
+    n, labels, _, _ = cv2.connectedComponentsWithStats(thin, connectivity=8)
+    if n <= 1:
+        return empty, empty
+    is_neck = joins_two_cores(thin, labels, n, core)
+    is_neck[0] = False
+    is_end = np.ones(n, dtype=bool)
+    is_end[0] = False
+    is_end &= ~is_neck
+    return apply_label_lut(labels, is_neck), apply_label_lut(labels, is_end)
+
+
+def grow_preserving_taper(thin: np.ndarray, mask: np.ndarray,
+                          r_min_px: float) -> np.ndarray:
+    """
+    Widen thin material while keeping each stroke's taper.
+
+    The obvious repair -- stamp a disk of radius r_min along the thin region's
+    medial axis -- beads the artwork. The medial axis of a wedge runs all the
+    way into its point, and a disk stamped at a point *is* a disk, so every
+    tapered hatching spike comes back as a lollipop of diameter exactly
+    min_thickness. On woodcut/engraving-style line art, which is mostly spikes,
+    that destroys the drawing.
+
+    Instead each region is scaled about its own medial axis: the stamped radius
+    follows the stroke's measured half-width, multiplied by one factor per
+    region, chosen so the region's *widest* point lands exactly on r_min. One
+    factor across the whole profile keeps every width ratio along the stroke
+    intact -- a taper stays a taper, a point stays a point -- while a uniform
+    hairline, whose profile is flat, still fattens uniformly to the minimum,
+    which is the one thing the old repair did well.
+
+    Two properties fall out of choosing the factor from the widest point.
+    Nothing is ever grown past r_min, so the repair cannot bulldoze neighbouring
+    detail. And it is a fixed point: once a region's widest point sits at r_min
+    the factor is 1, so re-running the pass leaves it alone instead of marching
+    the fattening down the taper toward the tip.
+    """
+    out = np.zeros_like(mask)
+    if r_min_px < 0.5 or not thin.any():
+        return out
+
+    skel = skeletonize_regions(thin)
+    if not skel.any():
+        return out
+
+    n, labels, _, _ = cv2.connectedComponentsWithStats(thin, connectivity=8)
+    half_width = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    sel = skel > 0
+    # Thin regions are the residue of an opening by r_min, so no pixel in them
+    # admits a disk of that radius: every widest is below r_min and every
+    # factor is therefore >= 1.
+    widest = group_max(labels, half_width, sel, n)
+    scale = np.ones(n, dtype=np.float32)
+    measurable = widest > 1e-6
+    scale[measurable] = r_min_px / widest[measurable]
+
+    idx = np.flatnonzero(sel.ravel())
+    target = half_width.ravel()[idx] * scale[labels.ravel()[idx]]
+    radii = np.rint(target).astype(np.int32)
+
+    ys, xs = np.unravel_index(idx, mask.shape)
+    cap = max(1, int(math.ceil(r_min_px)))
+    for r in np.unique(radii):
+        if r < 1:
+            # Sub-pixel end of the taper. The smallest disk this platform can
+            # stamp is already 3px across, which would blunt the very point we
+            # are trying to keep, and the caller ORs the result back over the
+            # original mask -- so those pixels survive unstamped, exactly as
+            # drawn.
+            continue
+        layer = np.zeros_like(mask)
+        pick = radii == r
+        layer[ys[pick], xs[pick]] = FG
+        out = cv2.bitwise_or(out, cv2.dilate(layer, disk(min(int(r), cap))))
+    return out
+
+
 def enforce_min_thickness(mask: np.ndarray, cfg: Config) -> Tuple[np.ndarray, Dict, np.ndarray]:
     """
     Grow every sub-minimum feature up to the minimum thickness.
 
-    Thin material is reduced to its centre line, and that centre line is dilated
-    by the minimum radius. Because the medial axis is by definition equidistant
-    from both walls, the regrown stroke lands symmetrically on the original
-    path: hairlines fatten in place, needle tips round off to a radius the torch
-    can survive, and everything already thick enough is bit-for-bit untouched.
+    Thin material is regrown about its own medial axis, which is by definition
+    equidistant from both walls, so the repair lands symmetrically on the
+    original path and everything already thick enough is bit-for-bit untouched.
+
+    How wide the regrown stroke is depends on cfg.thicken_mode. 'taper' scales
+    each region's own width profile (see grow_preserving_taper) and is the
+    default; 'uniform' stamps a constant r_min disk, which fattens hairlines
+    just as well but turns tapered spikes into beads.
     """
     r_min_px = cfg.px(cfg.min_thickness_mm) / 2.0
     tip_tol = sharp_tip_tolerance(cfg.sharp_tip_deg)
@@ -1025,8 +1170,27 @@ def enforce_min_thickness(mask: np.ndarray, cfg: Config) -> Tuple[np.ndarray, Di
         info["passes"] = p + 1
         if not thin.any():
             break
-        grown = cv2.dilate(skeletonize_regions(thin), kernel)
+        trimmed = None
+        if cfg.tip_policy == "trim":
+            # A needle's sub-minimum zone is (kerf/2)/tan(half-angle) long and
+            # does not shrink when the part is scaled up -- the angle is what
+            # sets it, and the angle is scale-free. So on engraving-style art
+            # the torch is going to consume the last centimetre of every spike
+            # whatever size the panel is. Fattening it into a round stub is one
+            # answer; ending the wedge early is the other, and it keeps the two
+            # converging straight edges that make the stroke read as a spike
+            # instead of a bulb. Only free ends may be trimmed -- trimming a
+            # neck would cut the part in half.
+            thin, trimmed = split_thin_by_role(thin, out, r_min_px)
+
+        if cfg.thicken_mode == "uniform":
+            grown = cv2.dilate(skeletonize_regions(thin), kernel) if thin.any() \
+                else np.zeros_like(out)
+        else:
+            grown = grow_preserving_taper(thin, out, r_min_px)
         merged = cv2.bitwise_or(out, grown)
+        if trimmed is not None and trimmed.any():
+            merged = cv2.bitwise_and(merged, cv2.bitwise_not(trimmed))
         if np.array_equal(merged, out):
             break
         out = merged
@@ -1432,7 +1596,20 @@ def _vectorize_once(mask: np.ndarray, cfg: Config,
     raw_total = 0
     kept_total = 0
 
+    # The mask-stage area filters (stage 2) run before thickening, gap-filling
+    # and smoothing, so a couple of pixels of morphological residue can still
+    # be sitting in the mask by the time we trace it. A 2x2px leftover traces
+    # as a perfectly valid 4-point contour, survives Douglas-Peucker, and lands
+    # in the DXF as a sub-millimetre closed loop — which CAM happily pierces,
+    # burning a dot into the sheet. Re-apply the same thresholds here, where
+    # every morphological stage is already behind us.
+    min_shell_px2 = cfg.mm2_to_px2(cfg.min_feature_area_mm2)
+    min_hole_px2 = cfg.mm2_to_px2(cfg.min_hole_area_mm2)
+
     for contour, is_hole in trace_contours(mask):
+        area_px2 = cv2.contourArea(contour.reshape(-1, 1, 2).astype(np.float32))
+        if area_px2 < (min_hole_px2 if is_hole else min_shell_px2):
+            continue
         raw_total += len(contour)
         simple = simplify_contour(contour, eps_px)
         if len(simple) < 3:
@@ -2144,6 +2321,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="sharpest tip angle allowed; below this, tips get rounded off")
     st.add_argument("--thicken-passes", type=int, default=3,
                     help="thickening convergence iterations")
+    st.add_argument("--tip-policy", choices=["round", "trim"], default="round",
+                    help="what to do with a sub-minimum free end (a spike, not a neck): "
+                         "'round' grows it to the minimum, 'trim' ends the stroke early "
+                         "and keeps its straight converging edges")
+    st.add_argument("--thicken-mode", choices=["taper", "uniform"], default="taper",
+                    help="how thin features are regrown: 'taper' scales each stroke's "
+                         "own width profile and keeps pointed tips pointed; 'uniform' "
+                         "stamps a constant min-thickness disk, which beads them")
     st.add_argument("--kerf-mm", type=float, default=1.2,
                     help="beam/torch kerf (plasma ~1.2, fiber laser ~0.15)")
     st.add_argument("--gap-factor", type=float, default=1.5,
@@ -2195,6 +2380,8 @@ def config_from_args(a: argparse.Namespace) -> Config:
         min_thickness_mm=a.min_thickness_mm,
         sharp_tip_deg=a.sharp_tip_deg,
         thicken_passes=a.thicken_passes,
+        thicken_mode=a.thicken_mode,
+        tip_policy=a.tip_policy,
         kerf_mm=a.kerf_mm,
         gap_factor=a.gap_factor,
         fill_narrow_gaps=a.fill_narrow_gaps,

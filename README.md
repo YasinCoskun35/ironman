@@ -111,7 +111,17 @@ Pencere açıldığında yukarıdan aşağıya sırayla gördüklerin:
 2. **Boyut** — Bitmiş parçanın mm cinsinden ölçüsü. Emin değilsen **"Min Güvenli Ölçüyü Hesapla"**'ya
    bas — script tasarımını tarayıp en küçük güvenli boyutu mm/inch olarak yazar.
 3. **Yapısal Kurallar** — Ne kadar ince çizgiye izin verildiği, torç/lazer kerf payı, sivri uçların
-   ne zaman yuvarlanacağı.
+   ne zaman yuvarlanacağı, ve **İnce yer onarımı**: `taper` ince bir çizgiyi kalınlaştırırken o
+   çizginin kendi kalınlık profilini tek bir katsayıyla ölçekler, böylece konik uçlar konik kalır;
+   `uniform` ise sabit çaplı disk basar ve her sivri ucu topağa çevirir (eski davranış). Oymabaskı
+   tarzı, tarama çizgili çizimlerde `taper` şart — varsayılan odur. Yanındaki **Sivri uç politikası**
+   ise kesilemeyecek kadar incelen *serbest* uçlara ne olacağını söyler: `trim` çizgiyi erken bitirir
+   ve kamanın düz kenarlarını korur, `round` kalınlaştırıp yuvarlar. Taşıyıcı boyunlar her iki
+   durumda da kalınlaştırılır — onlar kesilirse parça ikiye ayrılır.
+
+   > Bir ucun kesilemeyen boyu `s = (kerf/2) / tan(uç açısı/2)` kadardır ve **parça boyutundan
+   > bağımsızdır**: 7°'lik bir uç 1.8mm kerfte son 14.7mm'sini kaybeder, 0.15mm kerfte sadece
+   > 1.2mm'sini. İnce tarama detayı kaybolduğunda çare parçayı büyütmek değil, kerfi küçültmektir.
 4. **Çıktı Formatı** — Hangi dosyaların üretileceği (SVG/DXF/PNG) ve PNG için piksel/DPI ayarları.
 5. **EazyDemand Ayarlarını Yükle** — 3-4 numaralı tüm alanları EazyDemand'ın gerektirdiği değerlerle
    tek tıkla doldurur.
@@ -129,7 +139,9 @@ EazyDemand'a yükleyeceğin bir dosyan varsa dört tıkla biter:
 4. **Çıktı Klasörünü Aç**'a bas — PNG ve DXF orada.
 
 EazyDemand gereksinimleri: PNG + DXF format, dosya < 3MB, en ince çizgi/delik ≥ 1.5mm, görsel
-4500×5100px @ 300 DPI, beyaz arka plan — hepsi bu şablonla otomatik karşılanır.
+4500×5100px @ 300 DPI, beyaz arka plan — hepsi bu şablonla otomatik karşılanır. Şablon min
+kalınlığı 1.8mm'e çeker: EazyDemand'ın 1.5mm sınırına tam oturmak yerine 0.3mm pay bırakır, böylece
+kesimde inceldiği için reddedilen çizgi kalmaz.
 
 ## Komut Satırı (CLI)
 

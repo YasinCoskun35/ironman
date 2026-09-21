@@ -159,17 +159,35 @@ class CncPrepGUI(tk.Tk):
         st = ttk.LabelFrame(self, text="Yapısal Kurallar")
         st.pack(fill="x", **pad)
         row = ttk.Frame(st); row.pack(fill="x", padx=8, pady=4)
-        self.min_thickness = LabeledEntry(row, "Min kalınlık (mm)", default="1.5"); self.min_thickness.pack(side="left")
+        self.min_thickness = LabeledEntry(row, "Min kalınlık (mm)", default="1.8"); self.min_thickness.pack(side="left")
         self.sharp_tip_deg = LabeledEntry(row, "Sivri uç açısı (°)", default="12"); self.sharp_tip_deg.pack(side="left", padx=(16, 0))
 
         row = ttk.Frame(st); row.pack(fill="x", padx=8, pady=4)
-        self.kerf_mm = LabeledEntry(row, "Kerf (mm)", default="1.5"); self.kerf_mm.pack(side="left")
+        self.kerf_mm = LabeledEntry(row, "Kerf (mm)", default="1.8"); self.kerf_mm.pack(side="left")
         self.gap_factor = LabeledEntry(row, "Boşluk çarpanı", default="1.0"); self.gap_factor.pack(side="left", padx=(16, 0))
 
         row = ttk.Frame(st); row.pack(fill="x", padx=8, pady=(0, 6))
         self.fill_gaps_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(row, text="Dar boşlukları otomatik kapat (--fill-narrow-gaps)",
                         variable=self.fill_gaps_var).pack(side="left")
+
+        thicken_row = ttk.Frame(st); thicken_row.pack(fill="x", padx=8, pady=(0, 6))
+        ttk.Label(thicken_row, text="İnce yer onarımı", width=18, anchor="w").pack(side="left")
+        self.thicken_mode_var = tk.StringVar(value="taper")
+        ttk.Combobox(thicken_row, textvariable=self.thicken_mode_var, width=10, state="readonly",
+                    values=["taper", "uniform"]).pack(side="left")
+        ttk.Label(thicken_row, foreground="#5B6266",
+                  text="taper: çizginin kendi kalınlık profilini ölçekler, sivri uç sivri kalır  |  "
+                       "uniform: sabit disk basar, uçları topak yapar").pack(side="left", padx=8)
+
+        tip_row = ttk.Frame(st); tip_row.pack(fill="x", padx=8, pady=(0, 6))
+        ttk.Label(tip_row, text="Sivri uç politikası", width=18, anchor="w").pack(side="left")
+        self.tip_policy_var = tk.StringVar(value="trim")
+        ttk.Combobox(tip_row, textvariable=self.tip_policy_var, width=10, state="readonly",
+                    values=["round", "trim"]).pack(side="left")
+        ttk.Label(tip_row, foreground="#5B6266",
+                  text="kesilemeyecek kadar incelen serbest uç: trim erken bitirir (düz kenarlar kalır), "
+                       "round kalınlaştırıp yuvarlar").pack(side="left", padx=8)
 
         floating_row = ttk.Frame(st); floating_row.pack(fill="x", padx=8, pady=(0, 6))
         ttk.Label(floating_row, text="Uçan parçalar", width=18, anchor="w").pack(side="left")
@@ -279,9 +297,9 @@ class CncPrepGUI(tk.Tk):
     # ------------------------------------------------------------ presets
 
     def _apply_eazydemand_preset(self):
-        self.min_thickness.var.set("1.5")
+        self.min_thickness.var.set("1.8")
         self.sharp_tip_deg.var.set("12")
-        self.kerf_mm.var.set("1.5")
+        self.kerf_mm.var.set("1.8")
         self.gap_factor.var.set("1.0")
         self.fill_gaps_var.set(True)
         self.canvas_px.var.set("4500x5100")
@@ -289,7 +307,7 @@ class CncPrepGUI(tk.Tk):
         self.no_svg_var.set(True)
         self.no_dxf_var.set(False)
         self.no_png_var.set(False)
-        self._log("[preset] EazyDemand ayarları yüklendi (min 1.5mm, kerf 1.5mm, 4500x5100@300dpi, PNG+DXF)\n")
+        self._log("[preset] EazyDemand ayarları yüklendi (min 1.8mm, kerf 1.8mm, 4500x5100@300dpi, PNG+DXF)\n")
 
     def _reset_defaults(self):
         self.width_mm.var.set("550")
@@ -320,6 +338,7 @@ class CncPrepGUI(tk.Tk):
             "min_thickness": self.min_thickness.var, "sharp_tip_deg": self.sharp_tip_deg.var,
             "kerf_mm": self.kerf_mm.var, "gap_factor": self.gap_factor.var,
             "fill_gaps": self.fill_gaps_var, "floating": self.floating_var,
+            "thicken_mode": self.thicken_mode_var, "tip_policy": self.tip_policy_var,
             "no_svg": self.no_svg_var, "no_dxf": self.no_dxf_var, "no_png": self.no_png_var,
             "canvas_px": self.canvas_px.var, "png_dpi": self.png_dpi.var,
             "preview": self.preview_var,
@@ -387,6 +406,8 @@ class CncPrepGUI(tk.Tk):
         if self.fill_gaps_var.get():
             args.append("--fill-narrow-gaps")
         args += ["--floating", self.floating_var.get()]
+        args += ["--thicken-mode", self.thicken_mode_var.get()]
+        args += ["--tip-policy", self.tip_policy_var.get()]
 
         if self.no_svg_var.get():
             args.append("--no-svg")
@@ -487,9 +508,9 @@ class CncPrepGUI(tk.Tk):
             messagebox.showerror("Cut-Ready", "Önce bir girdi dosyası seç.")
             return
         args = ["-i", inp, "-o", str(HERE / ".suggest_scratch"),
-                "--min-thickness-mm", self.min_thickness.get() or "1.5",
+                "--min-thickness-mm", self.min_thickness.get() or "1.8",
                 "--sharp-tip-deg", self.sharp_tip_deg.get() or "60",
-                "--kerf-mm", self.kerf_mm.get() or "1.2",
+                "--kerf-mm", self.kerf_mm.get() or "1.8",
                 "--gap-factor", self.gap_factor.get() or "1.5"]
         if self.fill_gaps_var.get():
             args.append("--fill-narrow-gaps")
