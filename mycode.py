@@ -1984,6 +1984,26 @@ def estimate_min_safe_size(src: Path, base_cfg: Config, jobs: int = 4) -> Dict:
     aspect = h0_mm / w0_mm if w0_mm else 1.0
     info["aspect_h_over_w"] = round(aspect, 4)
 
+    # --width-mm sizes the CANVAS, and most sources carry white margin, so the
+    # metal that actually gets cut is smaller than the number the caller
+    # passes. Reporting only the canvas width answers the wrong question: what
+    # a customer measures on the wall, and what the shop quotes, is the ink.
+    # Measure the ink box once, as a fraction of the canvas, and carry it
+    # through so both numbers can be reported.
+    ink_fw = ink_fh = 1.0
+    try:
+        probe = dataclass_replace(base_cfg, height_mm=None, width_mm=ref_width)
+        probe.mm_per_px = w0_mm / gray0.shape[1] if gray0.shape[1] else 1.0
+        mask0 = binarize(gray0, probe)
+        ys, xs = np.nonzero(mask0)
+        if xs.size:
+            ink_fw = (int(xs.max()) - int(xs.min()) + 1) / float(gray0.shape[1])
+            ink_fh = (int(ys.max()) - int(ys.min()) + 1) / float(gray0.shape[0])
+    except Exception:
+        pass                      # fall back to canvas == artwork
+    info["ink_fraction_w"] = round(ink_fw, 4)
+    info["ink_fraction_h"] = round(ink_fh, 4)
+
     candidates: List[float] = []
     w = lo
     while w <= hi:
@@ -2043,6 +2063,15 @@ def estimate_min_safe_size(src: Path, base_cfg: Config, jobs: int = 4) -> Dict:
     info["min_safe_height_mm"] = round(safe_h, 1)
     info["min_safe_width_in"] = round(safe_w / MM_PER_INCH, 2)
     info["min_safe_height_in"] = round(safe_h / MM_PER_INCH, 2)
+    # The cut part: canvas minus the source's white margin. This is the size to
+    # quote and to put on a listing; min_safe_width_mm is what you pass back to
+    # --width-mm to reproduce it.
+    art_w = safe_w * info["ink_fraction_w"]
+    art_h = safe_h * info["ink_fraction_h"]
+    info["min_safe_artwork_width_mm"] = round(art_w, 1)
+    info["min_safe_artwork_height_mm"] = round(art_h, 1)
+    info["min_safe_artwork_width_in"] = round(art_w / MM_PER_INCH, 2)
+    info["min_safe_artwork_height_in"] = round(art_h / MM_PER_INCH, 2)
     return info
 
 
@@ -2416,8 +2445,16 @@ def log_size_suggestion(name: str, sug: Dict) -> None:
         print(f"       size: {sug['error']}")
         return
     w_mm, h_mm = sug["min_safe_width_mm"], sug["min_safe_height_mm"]
-    w_in, h_in = sug["min_safe_width_in"], sug["min_safe_height_in"]
-    print(f"       size: min safe {w_mm}x{h_mm}mm  ({w_in}\"x{h_in}\")")
+    aw, ah = sug.get("min_safe_artwork_width_mm"), sug.get("min_safe_artwork_height_mm")
+    aw_in, ah_in = sug.get("min_safe_artwork_width_in"), sug.get("min_safe_artwork_height_in")
+    # Lead with the cut part, because that is the size anyone measures or
+    # quotes; the canvas follows as the value to feed back to --width-mm.
+    if aw is not None:
+        print(f"       size: min safe cut part {aw}x{ah}mm  ({aw_in}\"x{ah_in}\")"
+              f"  [--width-mm {w_mm}, canvas {w_mm}x{h_mm}mm]")
+    else:
+        w_in, h_in = sug["min_safe_width_in"], sug["min_safe_height_in"]
+        print(f"       size: min safe canvas {w_mm}x{h_mm}mm  ({w_in}\"x{h_in}\")")
 
 
 def log_result(rep: Dict, quiet: bool) -> None:
