@@ -286,5 +286,58 @@ class TestJoinsTwoCores:
         assert not flag.any()
 
 
+class TestMeasureDesignChange:
+    """
+    "Structurally safe" is not "looks like the design": gap filling can weld
+    a fine design shut and still pass. These pin down the two signals that
+    tell the cases apart -- changed metal area and closed cut-outs.
+    """
+
+    @staticmethod
+    def _plate_with_slots():
+        mask = np.zeros((100, 100), np.uint8)
+        mask[10:90, 10:90] = 255
+        mask[30:70, 30:34] = 0             # enclosed slot
+        mask[30:70, 60:64] = 0             # enclosed slot
+        return mask
+
+    def test_untouched_design_is_preserved(self):
+        base = self._plate_with_slots()
+        info = m.measure_design_change(base, base.copy(), m.Config())
+        assert info["preserved"]
+        assert info["changed_area_pct"] == 0.0
+        assert info["openings_total"] == 2 and info["openings_lost"] == 0
+
+    def test_closed_slot_is_not_preserved_even_when_area_change_is_small(self):
+        base = self._plate_with_slots()
+        final = base.copy()
+        final[30:70, 30:34] = 255          # one slot welded shut
+        info = m.measure_design_change(base, final, m.Config(max_design_change_pct=50.0))
+        assert info["openings_lost"] == 1
+        assert not info["preserved"]
+
+    def test_area_change_over_the_limit_is_not_preserved(self):
+        base = self._plate_with_slots()
+        final = base.copy()
+        final[5:10, 10:90] = 255           # a thickened edge, no slot touched
+        info = m.measure_design_change(base, final, m.Config(max_design_change_pct=1.0))
+        assert info["openings_lost"] == 0
+        assert info["changed_area_pct"] > 1.0
+        assert not info["preserved"]
+
+    def test_removed_metal_counts_as_change(self):
+        base = self._plate_with_slots()
+        final = base.copy()
+        final[10:20, 10:90] = 0            # a trimmed strip
+        info = m.measure_design_change(base, final, m.Config())
+        assert info["removed_area_pct"] > 0
+        assert not info["preserved"]
+
+    def test_empty_design_is_a_no_op(self):
+        empty = np.zeros((20, 20), np.uint8)
+        info = m.measure_design_change(empty, empty, m.Config())
+        assert info["preserved"] and info["changed_area_pct"] == 0.0
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

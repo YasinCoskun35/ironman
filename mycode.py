@@ -169,6 +169,7 @@ class Config:
     gap_factor: float = 1.5               # slots below kerf*factor are flagged
     fill_narrow_gaps: bool = False        # auto-close doomed slots
     kerf_compensate: str = "none"         # none | outward | inward
+    max_design_change_pct: float = 1.0    # repairs above this % of the metal area = design altered
 
     # --- floating elements --------------------------------------------------
     floating: str = "warn"                # warn | bridge | remove | keep
@@ -1268,6 +1269,63 @@ def analyze_narrow_gaps(mask: np.ndarray, cfg: Config) -> Tuple[np.ndarray, Dict
     return mask, info, gaps
 
 
+def measure_design_change(base: np.ndarray, final: np.ndarray, cfg: Config) -> Dict:
+    """
+    How much did the repairs change the artwork? "Structurally safe" only says
+    the part will not break on the table; it says nothing about whether the
+    cut part still looks like the design. Gap filling in particular can weld
+    a fine design into a blob -- every slot "survives" because it no longer
+    exists -- and the old pipeline still called that result clean.
+
+    Two signals, both measured between the denoised source (``base``) and the
+    repaired mask (before any kerf offset, which is a cutting adjustment, not
+    a design change):
+
+    * changed_area_pct -- metal added (thickening, filled gaps) plus metal
+      removed (trimmed tips, dropped islands), as a share of the original
+      metal area.
+    * openings_lost -- enclosed cut-outs (eyes, slits, holes) that ended up
+      at least half filled. One closed eye can ruin a design while barely
+      moving the area figure, so it is counted separately.
+
+    The design counts as preserved when the area change stays within
+    cfg.max_design_change_pct and no enclosed opening was lost.
+    """
+    b = base > 0
+    f = final > 0
+    ink = int(b.sum())
+    added = int((f & ~b).sum())
+    removed = int((b & ~f).sum())
+    info: Dict = {
+        "changed_area_pct": 0.0,
+        "added_area_pct": 0.0,
+        "removed_area_pct": 0.0,
+        "openings_total": 0,
+        "openings_lost": 0,
+        "max_change_pct": cfg.max_design_change_pct,
+        "preserved": True,
+    }
+    if ink == 0:
+        return info
+    info["added_area_pct"] = round(100.0 * added / ink, 2)
+    info["removed_area_pct"] = round(100.0 * removed / ink, 2)
+    info["changed_area_pct"] = round(100.0 * (added + removed) / ink, 2)
+
+    holes = (fill_all_holes(base) > 0) & ~b
+    if holes.any():
+        n, labels = cv2.connectedComponents(holes.astype(np.uint8), connectivity=4)
+        if n > 1:
+            sizes = np.bincount(labels.ravel(), minlength=n)
+            filled = np.bincount(labels.ravel(), weights=f.ravel().astype(np.float64), minlength=n)
+            lost = filled[1:] >= 0.5 * sizes[1:]
+            info["openings_total"] = int(n - 1)
+            info["openings_lost"] = int(lost.sum())
+
+    info["preserved"] = (info["changed_area_pct"] <= cfg.max_design_change_pct
+                         and info["openings_lost"] == 0)
+    return info
+
+
 def apply_kerf_offset(mask: np.ndarray, cfg: Config) -> Tuple[np.ndarray, Dict]:
     """
     Optional global kerf compensation.
@@ -1884,10 +1942,13 @@ MM_PER_INCH = 25.4
 
 
 def _check_size_ok(src: Path, base_cfg: Config, width_mm: float,
-                   min_iou: float = 0.90) -> Tuple[bool, int, int, float]:
+                   min_iou: float = 0.90) -> Tuple[bool, int, int, float, Dict]:
     """
     Run the *entire* pipeline (through vectorisation + topology check) at a
-    trial width, without writing anything. Returns (ok, thin_regions, narrow_gaps, iou).
+    trial width, without writing anything. Returns
+    (ok, thin_regions, narrow_gaps, iou, design_change) where design_change is
+    measure_design_change() for this width -- "ok" is structural safety only,
+    design_change["preserved"] says whether the part still matches the art.
 
     Small trial sizes need the full pipeline, not just thickness/gap
     enforcement: at a low raster resolution the fixed-mm Douglas-Peucker
@@ -1913,14 +1974,21 @@ def _check_size_ok(src: Path, base_cfg: Config, width_mm: float,
 
     mask = binarize(gray, trial)
     if not mask.any() or float((mask > 0).mean()) > 0.999:
-        return False, -1, -1, 0.0
+        return False, -1, -1, 0.0, {"preserved": False}
 
     mask, _ = denoise(mask, trial)
     mask = dejag(mask, trial)
+    base = mask.copy()
 
     mask, _, _, _ = handle_floating(mask, trial)
     mask, thick_info, _ = enforce_min_thickness(mask, trial)
     mask, gap_info, _ = analyze_narrow_gaps(mask, trial)
+    if gap_info["filled"]:
+        # Same second thickening pass as process_file(), so the trial judges
+        # exactly the geometry a real run would export.
+        mask, thick_info2, _ = enforce_min_thickness(mask, trial)
+        thick_info["thin_regions_remaining"] = thick_info2["thin_regions_remaining"]
+    change = measure_design_change(base, mask, trial)
     mask, _ = apply_kerf_offset(mask, trial)
 
     subpaths, vec_stats = vectorize(mask, trial)
@@ -1931,10 +1999,10 @@ def _check_size_ok(src: Path, base_cfg: Config, width_mm: float,
 
     gaps_ok = gap_info["narrow_gap_count"] == 0 or trial.fill_narrow_gaps
     ok = thick_info["thin_regions_remaining"] == 0 and gaps_ok and structurally_sound
-    return ok, thick_info["thin_regions_remaining"], gap_info["narrow_gap_count"], iou
+    return ok, thick_info["thin_regions_remaining"], gap_info["narrow_gap_count"], iou, change
 
 
-def _check_size_ok_worker(args: Tuple[str, Config, float]) -> Tuple[float, Tuple[bool, int, int, float]]:
+def _check_size_ok_worker(args: Tuple[str, Config, float]) -> Tuple[float, Tuple[bool, int, int, float, Dict]]:
     """Top-level so it can be pickled by ProcessPoolExecutor. See _worker() for the same pattern."""
     src_str, base_cfg, width = args
     cv2.setNumThreads(1)
@@ -1943,7 +2011,12 @@ def _check_size_ok_worker(args: Tuple[str, Config, float]) -> Tuple[float, Tuple
 
 def estimate_min_safe_size(src: Path, base_cfg: Config, jobs: int = 4) -> Dict:
     """
-    Find the smallest finished width that is *structurally* safe to cut: every
+    Find two sizes. min_safe_*: the smallest finished width that is
+    *structurally* safe to cut. min_preserved_*: the smallest width at which
+    the repairs needed to get there leave the design essentially unchanged
+    (see measure_design_change) -- the size to actually sell at.
+
+    Structural safety means: every
     stroke clears --min-thickness-mm, every gap clears the kerf threshold, and
     the exported outline has no severed part and no self-crossing edge. It
     does NOT chase a pixel-perfect vector fit (see _check_size_ok) -- a design
@@ -1972,6 +2045,8 @@ def estimate_min_safe_size(src: Path, base_cfg: Config, jobs: int = 4) -> Dict:
         "min_safe_height_mm": None,
         "min_safe_width_in": None,
         "min_safe_height_in": None,
+        "min_preserved_width_mm": None,
+        "min_preserved_height_mm": None,
         "aspect_h_over_w": None,
     }
 
@@ -2010,7 +2085,7 @@ def estimate_min_safe_size(src: Path, base_cfg: Config, jobs: int = 4) -> Dict:
         candidates.append(w)
         w *= 1.35
 
-    results: Dict[float, Tuple[bool, int, int, float]] = {}
+    results: Dict[float, Tuple[bool, int, int, float, Dict]] = {}
     workers = max(1, min(jobs, len(candidates), os.cpu_count() or 4))
     if workers > 1 and len(candidates) > 1:
         payload = [(str(src), base_cfg, cw) for cw in candidates]
@@ -2021,26 +2096,83 @@ def estimate_min_safe_size(src: Path, base_cfg: Config, jobs: int = 4) -> Dict:
         for cw in candidates:
             results[cw] = _check_size_ok(src, base_cfg, cw)
 
-    for cw in candidates:
-        ok, thin, gaps, iou = results[cw]
-        info["checked"].append({"width_mm": round(cw, 1), "ok": ok,
-                                "thin_regions": thin, "narrow_gaps": gaps, "iou": round(iou, 4)})
+    def record(cw: float, res: Tuple[bool, int, int, float, Dict]) -> None:
+        ok, thin, gaps, iou, change = res
+        info["checked"].append({
+            "width_mm": round(cw, 1), "ok": ok, "thin_regions": thin, "narrow_gaps": gaps,
+            "iou": round(iou, 4),
+            "design_preserved": bool(ok and change.get("preserved", False)),
+            "changed_area_pct": change.get("changed_area_pct"),
+            "openings_lost": change.get("openings_lost"),
+        })
 
-    last_fail_width = lo
-    first_pass_width = None
     for cw in candidates:
-        ok = results[cw][0]
-        if ok:
-            first_pass_width = cw
-            break
-        last_fail_width = cw
+        record(cw, results[cw])
 
-    if first_pass_width is None:
+    # Two answers, because they are two different questions:
+    #   structural -- the smallest size that cuts without breaking (repairs allowed);
+    #   preserved  -- the smallest size at which those repairs leave the design
+    #                 essentially untouched. This is the one to sell at: below it
+    #                 the cut part no longer matches the listing photos.
+    def passes(res: Tuple[bool, int, int, float, Dict], need_preserved: bool) -> bool:
+        ok, change = res[0], res[4]
+        return ok and (not need_preserved or bool(change.get("preserved", False)))
+
+    def search(need_preserved: bool) -> Optional[float]:
+        last_fail, first_pass = lo, None
+        for cw in candidates:
+            if passes(results[cw], need_preserved):
+                first_pass = cw
+                break
+            last_fail = cw
+        if first_pass is None:
+            return None
+        # Binary-search refine between the last known failure and the first
+        # pass. The range is one geometric step wide, so it stays sequential.
+        low, high = last_fail, first_pass
+        while high - low > tol_mm:
+            mid = (low + high) / 2.0
+            res = _check_size_ok(src, base_cfg, mid)
+            record(mid, res)
+            if passes(res, need_preserved):
+                high = mid
+            else:
+                low = mid
+        return float(math.ceil(high))
+
+    safe_w = search(need_preserved=False)
+    if safe_w is None:
         info["error"] = (
             f"{hi:.0f}mm genişliğe kadar denendi, hâlâ ince/dar bölge var — "
             f"tasarımın kendisinde neredeyse sıfır genişlikte bir kusur olabilir"
         )
         return info
+    keep_w = search(need_preserved=True)
+
+    def fill(prefix: str, width: float) -> None:
+        height = width * aspect
+        info[f"{prefix}_width_mm"] = round(width, 1)
+        info[f"{prefix}_height_mm"] = round(height, 1)
+        info[f"{prefix}_width_in"] = round(width / MM_PER_INCH, 2)
+        info[f"{prefix}_height_in"] = round(height / MM_PER_INCH, 2)
+        # The cut part: canvas minus the source's white margin. This is the
+        # size to quote and to put on a listing; the canvas width is what you
+        # pass back to --width-mm to reproduce it.
+        art_w = width * info["ink_fraction_w"]
+        art_h = height * info["ink_fraction_h"]
+        info[f"{prefix}_artwork_width_mm"] = round(art_w, 1)
+        info[f"{prefix}_artwork_height_mm"] = round(art_h, 1)
+        info[f"{prefix}_artwork_width_in"] = round(art_w / MM_PER_INCH, 2)
+        info[f"{prefix}_artwork_height_in"] = round(art_h / MM_PER_INCH, 2)
+
+    fill("min_safe", safe_w)
+    if keep_w is not None:
+        fill("min_preserved", max(keep_w, safe_w))
+    else:
+        info["preserved_error"] = (
+            f"{hi:.0f}mm genişliğe kadar tasarım korunarak kesilebilecek bir ölçü bulunamadı"
+        )
+    return info
 
     # Binary-search refine between the last known failure and the first pass.
     # This range is narrow (one geometric step wide) so it stays sequential --
@@ -2128,6 +2260,8 @@ def process_file(src: Path, out_dir: Path, cfg: Config) -> Dict:
             thick_info["thin_regions_remaining"] = thick_info2["thin_regions_remaining"]
             thick_info["min_feature_mm_after"] = thick_info2["min_feature_mm_after"]
 
+        design_change = measure_design_change(base, mask, cfg)
+
         mask, kerf_info = apply_kerf_offset(mask, cfg)
 
         subpaths, vec_stats = vectorize(mask, cfg)
@@ -2147,6 +2281,7 @@ def process_file(src: Path, out_dir: Path, cfg: Config) -> Dict:
             "floating": float_info,
             "thickness": thick_info,
             "gaps": gap_info,
+            "design_change": design_change,
             "kerf": kerf_info,
             "vector": vec_stats,
             "bridges": [asdict(b) for b in bridges],
@@ -2181,6 +2316,14 @@ def process_file(src: Path, out_dir: Path, cfg: Config) -> Dict:
             report["warnings"].append(
                 "exported geometry failed verification: " + "; ".join(detail) +
                 " — lower --simplify-mm or --bezier-tension")
+        if not design_change["preserved"]:
+            lost = design_change["openings_lost"]
+            report["warnings"].append(
+                f"design altered at this size: repairs changed "
+                f"{design_change['changed_area_pct']}% of the metal area"
+                + (f" and closed {lost} of {design_change['openings_total']} cut-out(s)" if lost else "")
+                + " — the cut part will not match the artwork; use a larger size "
+                  "(see --suggest-size, 'tasarım korunarak')")
         if float_info.get("bridge_cap_hit"):
             report["warnings"].append(
                 f"more islands than --max-bridges ({cfg.max_bridges}); some remain unbridged")
@@ -2366,6 +2509,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="weld shut slots that cannot survive the kerf")
     st.add_argument("--kerf-compensate", choices=["none", "outward", "inward"], default="none",
                     help="bake a kerf/2 offset into the geometry (usually leave to CAM)")
+    st.add_argument("--max-design-change-pct", type=float, default=1.0,
+                    help="repairs (thickening, gap filling, trimming) may change at most this "
+                         "%% of the metal area, with no enclosed cut-out closed, before the "
+                         "design counts as altered")
 
     fl = p.add_argument_group("floating elements")
     fl.add_argument("--floating", choices=["warn", "bridge", "remove", "keep"], default="warn",
@@ -2415,6 +2562,7 @@ def config_from_args(a: argparse.Namespace) -> Config:
         gap_factor=a.gap_factor,
         fill_narrow_gaps=a.fill_narrow_gaps,
         kerf_compensate=a.kerf_compensate,
+        max_design_change_pct=a.max_design_change_pct,
         floating=a.floating,
         bridge_width_mm=a.bridge_width_mm,
         max_bridges=a.max_bridges,
@@ -2440,21 +2588,33 @@ def _fmt_feature(v) -> str:
     return f"{v}mm" if v is not None else "clear"
 
 
+def _fmt_size(sug: Dict, prefix: str) -> Optional[str]:
+    """'40.0x40.0cm (15.75"x15.75")' for the cut part, falling back to the canvas."""
+    aw, ah = sug.get(f"{prefix}_artwork_width_mm"), sug.get(f"{prefix}_artwork_height_mm")
+    if aw is not None:
+        aw_in, ah_in = sug.get(f"{prefix}_artwork_width_in"), sug.get(f"{prefix}_artwork_height_in")
+        return f"{aw / 10:.1f}x{ah / 10:.1f}cm ({aw_in}\"x{ah_in}\")"
+    w, h = sug.get(f"{prefix}_width_mm"), sug.get(f"{prefix}_height_mm")
+    if w is None:
+        return None
+    return f"{w / 10:.1f}x{h / 10:.1f}cm canvas"
+
+
 def log_size_suggestion(name: str, sug: Dict) -> None:
+    # One line, because the GUI shows everything after "size:" in its label.
+    # The preserved size leads: it is the one to sell at. The structural size
+    # follows only as context -- below the first number the design changes.
     if sug.get("error"):
         print(f"       size: {sug['error']}")
         return
-    w_mm, h_mm = sug["min_safe_width_mm"], sug["min_safe_height_mm"]
-    aw, ah = sug.get("min_safe_artwork_width_mm"), sug.get("min_safe_artwork_height_mm")
-    aw_in, ah_in = sug.get("min_safe_artwork_width_in"), sug.get("min_safe_artwork_height_in")
-    # Lead with the cut part, because that is the size anyone measures or
-    # quotes; the canvas follows as the value to feed back to --width-mm.
-    if aw is not None:
-        print(f"       size: min safe cut part {aw}x{ah}mm  ({aw_in}\"x{ah_in}\")"
-              f"  [--width-mm {w_mm}, canvas {w_mm}x{h_mm}mm]")
+    keep = _fmt_size(sug, "min_preserved")
+    safe = _fmt_size(sug, "min_safe")
+    if keep is not None:
+        print(f"       size: tasarım korunarak min {keep}  [--width-mm {sug['min_preserved_width_mm']}]"
+              f"  |  sadece kırılmadan (tasarım değişir) {safe}")
     else:
-        w_in, h_in = sug["min_safe_width_in"], sug["min_safe_height_in"]
-        print(f"       size: min safe canvas {w_mm}x{h_mm}mm  ({w_in}\"x{h_in}\")")
+        print(f"       size: {sug.get('preserved_error', 'tasarım korunarak ölçü bulunamadı')}"
+              f"  |  sadece kırılmadan (tasarım değişir) {safe}  [--width-mm {sug['min_safe_width_mm']}]")
 
 
 def log_result(rep: Dict, quiet: bool) -> None:
