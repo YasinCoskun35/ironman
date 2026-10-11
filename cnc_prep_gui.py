@@ -195,6 +195,21 @@ class CncPrepGUI(tk.Tk):
         ttk.Combobox(floating_row, textvariable=self.floating_var, width=10, state="readonly",
                     values=["warn", "bridge", "remove", "keep"]).pack(side="left")
 
+        # ---- vectorisation -------------------------------------------------
+        vec = ttk.LabelFrame(self, text="Vektör")
+        vec.pack(fill="x", **pad)
+        row = ttk.Frame(vec); row.pack(fill="x", padx=8, pady=4)
+        self.work_res = LabeledEntry(row, "Çözünürlük (px/mm)", default="8"); self.work_res.pack(side="left")
+        self.simplify_mm = LabeledEntry(row, "Sadeleştirme (mm)", default="0.15"); self.simplify_mm.pack(side="left", padx=(16, 0))
+        self.bezier_tension = LabeledEntry(row, "Bezier gerginliği", default="0.85"); self.bezier_tension.pack(side="left", padx=(16, 0))
+
+        row = ttk.Frame(vec); row.pack(fill="x", padx=8, pady=(0, 6))
+        ttk.Label(row, foreground="#5B6266", justify="left",
+                  text="\"kontur maskeden sapıyor (IoU)\" uyarısı alırsan çözünürlüğü yükselt (12-16). "
+                       "Bu uyarı ince şeritli tasarımlarda kontur üzerindeki 1 piksellik yuvarlamadan "
+                       "çıkar; sadeleştirme veya gerginlik düşürmek işe yaramaz, sadece düğüm sayısını "
+                       "şişirir. Çözünürlük arttıkça raster büyür ve iş yavaşlar.").pack(side="left")
+
         # ---- output format -------------------------------------------------
         out = ttk.LabelFrame(self, text="Çıktı Formatı")
         out.pack(fill="x", **pad)
@@ -409,6 +424,13 @@ class CncPrepGUI(tk.Tk):
         args += ["--thicken-mode", self.thicken_mode_var.get()]
         args += ["--tip-policy", self.tip_policy_var.get()]
 
+        if self.work_res.get():
+            args += ["--work-res", self.work_res.get()]
+        if self.simplify_mm.get():
+            args += ["--simplify-mm", self.simplify_mm.get()]
+        if self.bezier_tension.get():
+            args += ["--bezier-tension", self.bezier_tension.get()]
+
         if self.no_svg_var.get():
             args.append("--no-svg")
         if self.no_dxf_var.get():
@@ -509,9 +531,19 @@ class CncPrepGUI(tk.Tk):
             return
         args = ["-i", inp, "-o", str(HERE / ".suggest_scratch"),
                 "--min-thickness-mm", self.min_thickness.get() or "1.8",
-                "--sharp-tip-deg", self.sharp_tip_deg.get() or "60",
+                "--sharp-tip-deg", self.sharp_tip_deg.get() or "12",
                 "--kerf-mm", self.kerf_mm.get() or "1.8",
-                "--gap-factor", self.gap_factor.get() or "1.5"]
+                "--gap-factor", self.gap_factor.get() or "1.0"]
+        # The search brackets itself off the width you are working at
+        # (lo = 15% of it, hi = 4x). Leaving it out pins the reference at the
+        # 400mm fallback, so on a large design the answer can fall outside the
+        # range that was ever tried. The fallbacks above mirror the form's own
+        # defaults for the same reason: the estimate has to measure the design
+        # you are about to cut, not a differently-configured one.
+        if self.width_mm.get():
+            args += ["--width-mm", self.width_mm.get()]
+        if self.work_res.get():
+            args += ["--work-res", self.work_res.get()]
         if self.fill_gaps_var.get():
             args.append("--fill-narrow-gaps")
         args += ["--suggest-size", "--dry-run", "-q"]
