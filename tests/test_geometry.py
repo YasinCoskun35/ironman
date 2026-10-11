@@ -341,3 +341,51 @@ class TestMeasureDesignChange:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+class TestRasterizeSvgErrors:
+    """A rasteriser that is installed but fails must say so, not claim none exists."""
+
+    SVG = ('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">'
+           '<rect x="5" y="5" width="10" height="10"/></svg>')
+
+    def _fake_tool(self, tmp_path, body):
+        exe = tmp_path / "fake-inkscape"
+        exe.write_text(f"#!{sys.executable}\nimport sys\n{body}\n", encoding="utf-8")
+        exe.chmod(0o755)
+        return str(exe)
+
+    def _setup(self, monkeypatch, tmp_path, exe):
+        monkeypatch.setattr(m, "HAS_CAIROSVG", False)
+        monkeypatch.setattr(m, "find_svg_tool", lambda name: exe if name == "inkscape" else None)
+        svg = tmp_path / "d.svg"
+        svg.write_text(self.SVG, encoding="utf-8")
+        return svg
+
+    def test_no_tool_gives_install_help(self, monkeypatch, tmp_path):
+        svg = self._setup(monkeypatch, tmp_path, None)
+        with pytest.raises(RuntimeError, match="No SVG rasteriser available"):
+            m.rasterize_svg(svg, 20, 20)
+
+    def test_failing_tool_reports_its_own_error(self, monkeypatch, tmp_path):
+        exe = self._fake_tool(tmp_path, "sys.stderr.write('boom: cannot open display\\n'); sys.exit(3)")
+        svg = self._setup(monkeypatch, tmp_path, exe)
+        with pytest.raises(RuntimeError) as err:
+            m.rasterize_svg(svg, 20, 20)
+        msg = str(err.value)
+        assert "installed but could not render" in msg
+        assert "boom: cannot open display" in msg
+        assert "0.92 syntax" in msg  # the legacy command line was tried too
+
+    def test_falls_back_to_legacy_syntax(self, monkeypatch, tmp_path):
+        # Accepts only the 0.92 "-e <out>" form, like an old Inkscape would.
+        body = ("import cv2, numpy as np\n"
+                "a = sys.argv[1:]\n"
+                "if '-e' not in a: sys.exit(1)\n"
+                "img = np.full((20, 20), 255, np.uint8); img[5:15, 5:15] = 0\n"
+                "cv2.imwrite(a[a.index('-e') + 1], img)")
+        exe = self._fake_tool(tmp_path, body)
+        svg = self._setup(monkeypatch, tmp_path, exe)
+        gray = m.rasterize_svg(svg, 20, 20)
+        assert gray.shape[:2] == (20, 20)
+        assert gray[10, 10] < 128 and gray[1, 1] > 128

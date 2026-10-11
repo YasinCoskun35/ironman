@@ -509,12 +509,56 @@ def _svg_tool_help() -> str:
     )
 
 
+def _inkscape_executables() -> List[str]:
+    """
+    Every Inkscape binary worth trying, best first.
+
+    On Windows, Inkscape 1.x ships both bin\\inkscape.exe (a GUI-subsystem
+    program) and bin\\inkscape.com (the console front end its own docs
+    recommend for command-line exports). Some installs only export reliably
+    through the .com one, so try it first when it sits next to the .exe.
+    """
+    exe = find_svg_tool("inkscape")
+    if not exe:
+        return []
+    out: List[str] = []
+    if os.name == "nt":
+        com = Path(exe).with_suffix(".com")
+        if com.exists():
+            out.append(str(com))
+    out.append(exe)
+    return out
+
+
+def _run_svg_export(cmd: List[str], out_path: str) -> Optional[str]:
+    """Run one export command. Returns None on success, else a short reason."""
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             stdin=subprocess.DEVNULL, timeout=300)
+    except subprocess.TimeoutExpired:
+        return "timed out after 300 s"
+    except OSError as exc:
+        return f"could not start: {exc}"
+    produced = os.path.exists(out_path) and os.path.getsize(out_path) > 0
+    if res.returncode == 0 and produced:
+        return None
+    err = (res.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+    tail = " | ".join(err[-3:]) if err else "no error output"
+    if res.returncode == 0:
+        return f"exited OK but wrote no PNG ({tail})"
+    return f"exit code {res.returncode} ({tail})"
+
+
 def rasterize_svg(path: Path, out_w_px: int, out_h_px: int) -> np.ndarray:
     """
     Render an SVG to a grayscale numpy array at the requested pixel size.
 
-    Order of attempts: cairosvg (library) -> rsvg-convert -> inkscape.
+    Order of attempts: cairosvg (library) -> rsvg-convert -> inkscape (1.x
+    syntax, then the 0.92 syntax). When a tool is installed but fails, the
+    error says so and quotes the tool's own message, instead of claiming that
+    no rasteriser exists.
     """
+    failures: List[str] = []
     if HAS_CAIROSVG:
         import cairosvg
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
@@ -526,36 +570,49 @@ def rasterize_svg(path: Path, out_w_px: int, out_h_px: int) -> np.ndarray:
                 background_color="white",
             )
             return load_raster(Path(tmp_path))
+        except Exception as exc:  # noqa: BLE001 -- a broken cairo install must not hide Inkscape
+            failures.append(f"cairosvg: {exc}")
         finally:
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
 
-    for name, argv in (
-        ("rsvg-convert", ["{exe}", "-w", str(out_w_px), "-h", str(out_h_px),
-                          "-b", "white", "-o", "{out}", str(path)]),
-        ("inkscape", ["{exe}", str(path), "--export-type=png",
-                      f"--export-width={out_w_px}", f"--export-height={out_h_px}",
-                      "--export-background=white", "--export-filename={out}"]),
-    ):
-        exe = find_svg_tool(name)
-        if exe:
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                tmp_path = tmp.name
-            try:
-                cmd = [a.replace("{exe}", exe).replace("{out}", tmp_path) for a in argv]
-                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, timeout=300)
-                return load_raster(Path(tmp_path))
-            except (subprocess.SubprocessError, OSError):
-                continue
-            finally:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
+    attempts: List[Tuple[str, List[str]]] = []
+    rsvg = find_svg_tool("rsvg-convert")
+    if rsvg:
+        attempts.append(("rsvg-convert", [rsvg, "-w", str(out_w_px), "-h", str(out_h_px),
+                                          "-b", "white", "-o", "{out}", str(path)]))
+    for exe in _inkscape_executables():
+        attempts.append((exe, [exe, str(path), "--export-type=png",
+                               f"--export-width={out_w_px}", f"--export-height={out_h_px}",
+                               "--export-background=white", "--export-filename={out}"]))
+        # Inkscape 0.92 and older do not know --export-type/--export-filename.
+        attempts.append((exe + " (0.92 syntax)",
+                         [exe, "-z", "-e", "{out}", "-w", str(out_w_px), "-h", str(out_h_px),
+                          "-b", "white", str(path)]))
 
+    for label, argv in attempts:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            os.unlink(tmp_path)  # let the tool create it, so "wrote nothing" is detectable
+            cmd = [a.replace("{out}", tmp_path) for a in argv]
+            reason = _run_svg_export(cmd, tmp_path)
+            if reason is None:
+                return load_raster(Path(tmp_path))
+            failures.append(f"{label}: {reason}")
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    if failures:
+        raise RuntimeError(
+            "An SVG rasteriser is installed but could not render this file:\n  "
+            + "\n  ".join(failures)
+            + "\nWorkaround: export the design as PNG and use that as input.")
     raise RuntimeError(_svg_tool_help())
 
 
@@ -2666,7 +2723,19 @@ def run_doctor() -> int:
     svg_ok = HAS_CAIROSVG or find_svg_tool("inkscape") or find_svg_tool("rsvg-convert")
     print()
     if svg_ok:
-        print("  => SVG input: OK")
+        # Finding the binary is not enough: actually render a tiny SVG, so an
+        # install that is present but broken shows up here, with its message.
+        with tempfile.TemporaryDirectory() as td:
+            probe = Path(td) / "probe.svg"
+            probe.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">'
+                             '<rect x="5" y="5" width="10" height="10"/></svg>', encoding="utf-8")
+            try:
+                rasterize_svg(probe, 20, 20)
+                print("  => SVG input: OK (test render succeeded)")
+            except RuntimeError as exc:
+                print("  => SVG input: WILL FAIL (tool found, test render failed)")
+                print()
+                print(str(exc))
     else:
         print("  => SVG input: WILL FAIL")
         print()
