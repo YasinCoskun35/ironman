@@ -343,6 +343,31 @@ if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
 
 
+class TestBinarizeAutoInvert:
+    """invert=auto must tell a black background from a frame drawn to the edge."""
+
+    @staticmethod
+    def _cfg():
+        return m.Config(invert="auto")
+
+    def test_frame_touching_canvas_edge_is_not_inverted(self):
+        # Black frame running to the canvas edge around a mostly white sheet
+        # with a black branch: the frame is metal, not background.
+        g = np.full((200, 400), 255, np.uint8)
+        g[:8], g[-8:], g[:, :8], g[:, -8:] = 0, 0, 0, 0
+        cv2.line(g, (8, 190), (390, 10), 0, 12)
+        mask = m.binarize(g, self._cfg())
+        assert mask[100, 30] == m.BG   # open sheet stays a cut-out
+        assert mask[2, 200] == m.FG    # frame stays metal
+
+    def test_white_art_on_black_background_is_inverted(self):
+        g = np.zeros((200, 400), np.uint8)
+        cv2.circle(g, (200, 100), 60, 255, 14)
+        mask = m.binarize(g, self._cfg())
+        assert mask[100, 140] == m.FG  # the white ring is the metal
+        assert mask[5, 5] == m.BG
+
+
 class TestRasterizeSvgErrors:
     """A rasteriser that is installed but fails must say so, not claim none exists."""
 

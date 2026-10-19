@@ -690,6 +690,38 @@ def resolve_physical_size(cfg: Config, aspect: float,
 # Stage 1 — binarisation & denoise
 # ---------------------------------------------------------------------------
 
+def _ring(gray: np.ndarray, inset: int) -> np.ndarray:
+    """Pixels on the rectangle `inset` px in from the image edge."""
+    h, w = gray.shape[:2]
+    t, b, l, r = inset, h - 1 - inset, inset, w - 1 - inset
+    return np.concatenate([gray[t, l:r + 1], gray[b, l:r + 1],
+                           gray[t:b + 1, l], gray[t:b + 1, r]]).ravel()
+
+
+def _border_says_inverted(gray: np.ndarray) -> bool:
+    """
+    True when the artwork is white-on-black.
+
+    A dark outer edge used to be enough to call it, but a framed panel whose
+    frame runs to the edge of the canvas has a dark edge too, and inverting it
+    turns every cut-out into metal. The two differ just inside the edge: past a
+    frame the ring is mostly open sheet with only the touching branches dark,
+    while a black background stays dark until the artwork's own margin. So a
+    dark edge only counts as background if the rings within the frame-width
+    band (8% of the short side) stay dark as well.
+    """
+    h, w = gray.shape[:2]
+    if float(np.median(_ring(gray, 0))) >= 128.0:
+        return False
+    band = max(1, int(min(h, w) * 0.08))
+    for inset in range(1, band + 1, max(1, band // 16)):
+        if 2 * inset >= min(h, w):
+            break
+        if float(np.mean(_ring(gray, inset) >= 128)) > 0.25:
+            return False  # bright sheet just inside a frame
+    return True
+
+
 def binarize(gray: np.ndarray, cfg: Config) -> np.ndarray:
     """
     Produce a strict 0/255 mask where 255 == metal that remains.
@@ -701,13 +733,7 @@ def binarize(gray: np.ndarray, cfg: Config) -> np.ndarray:
     if cfg.invert == "yes":
         inverted = True
     elif cfg.invert == "auto":
-        h, w = gray.shape[:2]
-        ring = np.concatenate([
-            gray[0, :].ravel(), gray[h - 1, :].ravel(),
-            gray[:, 0].ravel(), gray[:, w - 1].ravel(),
-        ])
-        # Dark border -> the art is the bright thing.
-        inverted = float(np.median(ring)) < 128.0
+        inverted = _border_says_inverted(gray)
 
     if cfg.threshold is not None:
         mode = cv2.THRESH_BINARY if inverted else cv2.THRESH_BINARY_INV
