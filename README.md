@@ -109,7 +109,16 @@ Pencere açıldığında yukarıdan aşağıya sırayla gördüklerin:
 1. **Girdi / Çıktı** — İşlenecek dosyayı ya da klasörü, ve sonuçların yazılacağı klasörü buradan
    seçersin.
 2. **Boyut** — Bitmiş parçanın mm cinsinden ölçüsü. Emin değilsen **"Min Güvenli Ölçüyü Hesapla"**'ya
-   bas — script tasarımını tarayıp en küçük güvenli boyutu mm/inch olarak yazar.
+   bas — script tasarımını tarayıp iki ölçü yazar:
+   - **tasarım korunarak min** — onarımların (kalınlaştırma, dar boşluk kapatma, uç kırpma) metal
+     alanının en fazla %1'ini değiştirdiği ve hiçbir kapalı boşluğun (göz, yarık, delik) kapanmadığı
+     en küçük ölçü. **Satışa koyacağın en küçük beden budur.**
+   - **sadece kırılmadan** — parçanın kesimde kırılmadığı en küçük ölçü. Bunun altında değil ama
+     bununla "tasarım korunarak" arasında da tasarım değişir (ör. ince yarıklar kaynar, yapraklar
+     birleşir); bilgi için gösterilir.
+
+   Bir ölçüde çalıştırdığında onarımlar tasarımı bundan fazla değiştirirse sonuç "temiz" yerine
+   **uyarı** olur ("design altered at this size"). Eşik `--max-design-change-pct` ile değişir.
 3. **Yapısal Kurallar** — Ne kadar ince çizgiye izin verildiği, torç/lazer kerf payı, sivri uçların
    ne zaman yuvarlanacağı, ve **İnce yer onarımı**: `taper` ince bir çizgiyi kalınlaştırırken o
    çizginin kendi kalınlık profilini tek bir katsayıyla ölçekler, böylece konik uçlar konik kalır;
@@ -157,7 +166,7 @@ Tüm bayraklar için:
 .venv/bin/python3 mycode.py --help
 ```
 
-Bir tasarımın en küçük güvenli boyutunu (mm ve inch) öğrenmek için:
+Bir tasarımın en küçük boyutlarını (tasarım korunarak ve sadece kırılmadan, mm ve inch) öğrenmek için:
 
 ```bash
 .venv/bin/python3 mycode.py -i ./tasarim.svg -o /tmp/x --suggest-size --dry-run

@@ -68,7 +68,7 @@ class CncPrepGUI(tk.Tk):
         super().__init__()
         self.title("Cut-Ready — cnc_prep")
         self.geometry("860x800")
-        self.minsize(760, 680)
+        self.minsize(640, 420)
         self.configure(bg="#ECECEC")
 
         # macOS Tk (especially newer Tk 9.x aqua builds) has a known bug
@@ -114,11 +114,48 @@ class CncPrepGUI(tk.Tk):
 
     # ------------------------------------------------------------------ UI
 
+    def _make_scrollable(self) -> ttk.Frame:
+        """
+        Put the whole form in a vertically scrollable area, so every section
+        stays reachable when the window is shorter than the form (small
+        laptop screens, Windows display scaling).
+        """
+        canvas = tk.Canvas(self, bg="#ECECEC", highlightthickness=0)
+        vbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vbar.set)
+        vbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        body = ttk.Frame(canvas)
+        window = canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+
+        def on_wheel(event):
+            # The log and the results table scroll themselves; leave them alone.
+            if isinstance(event.widget, (tk.Text, ttk.Treeview)):
+                return
+            if getattr(event, "num", None) == 4:
+                step = -1
+            elif getattr(event, "num", None) == 5:
+                step = 1
+            elif sys.platform == "darwin":
+                step = -event.delta
+            else:
+                step = -event.delta // 120 or (-1 if event.delta > 0 else 1)
+            canvas.yview_scroll(step, "units")
+
+        self.bind_all("<MouseWheel>", on_wheel, add="+")
+        self.bind_all("<Button-4>", on_wheel, add="+")
+        self.bind_all("<Button-5>", on_wheel, add="+")
+        return body
+
     def _build_form(self):
         pad = {"padx": 8, "pady": 6}
+        body = self._make_scrollable()
 
         # ---- input/output --------------------------------------------
-        io = ttk.LabelFrame(self, text="Girdi / Çıktı")
+        io = ttk.LabelFrame(body, text="Girdi / Çıktı")
         io.pack(fill="x", **pad)
 
         row = ttk.Frame(io); row.pack(fill="x", padx=8, pady=4)
@@ -139,7 +176,7 @@ class CncPrepGUI(tk.Tk):
                         variable=self.recursive_var).pack(anchor="w", padx=8, pady=(0, 6))
 
         # ---- size --------------------------------------------------------
-        sz = ttk.LabelFrame(self, text="Boyut")
+        sz = ttk.LabelFrame(body, text="Boyut")
         sz.pack(fill="x", **pad)
         row = ttk.Frame(sz); row.pack(fill="x", padx=8, pady=4)
         self.width_mm = LabeledEntry(row, "Genişlik (mm)", default="550"); self.width_mm.pack(side="left")
@@ -156,7 +193,7 @@ class CncPrepGUI(tk.Tk):
         self.suggest_label.pack(side="left", padx=10)
 
         # ---- structural rules ---------------------------------------------
-        st = ttk.LabelFrame(self, text="Yapısal Kurallar")
+        st = ttk.LabelFrame(body, text="Yapısal Kurallar")
         st.pack(fill="x", **pad)
         row = ttk.Frame(st); row.pack(fill="x", padx=8, pady=4)
         self.min_thickness = LabeledEntry(row, "Min kalınlık (mm)", default="1.8"); self.min_thickness.pack(side="left")
@@ -196,7 +233,7 @@ class CncPrepGUI(tk.Tk):
                     values=["warn", "bridge", "remove", "keep"]).pack(side="left")
 
         # ---- vectorisation -------------------------------------------------
-        vec = ttk.LabelFrame(self, text="Vektör")
+        vec = ttk.LabelFrame(body, text="Vektör")
         vec.pack(fill="x", **pad)
         row = ttk.Frame(vec); row.pack(fill="x", padx=8, pady=4)
         self.work_res = LabeledEntry(row, "Çözünürlük (px/mm)", default="8"); self.work_res.pack(side="left")
@@ -211,7 +248,7 @@ class CncPrepGUI(tk.Tk):
                        "şişirir. Çözünürlük arttıkça raster büyür ve iş yavaşlar.").pack(side="left")
 
         # ---- output format -------------------------------------------------
-        out = ttk.LabelFrame(self, text="Çıktı Formatı")
+        out = ttk.LabelFrame(body, text="Çıktı Formatı")
         out.pack(fill="x", **pad)
 
         row = ttk.Frame(out); row.pack(fill="x", padx=8, pady=4)
@@ -230,14 +267,14 @@ class CncPrepGUI(tk.Tk):
         self.png_dpi = LabeledEntry(row, "PNG DPI", default="300"); self.png_dpi.pack(side="left", padx=(16, 0))
 
         # ---- presets ---------------------------------------------------
-        presets = ttk.Frame(self); presets.pack(fill="x", **pad)
+        presets = ttk.Frame(body); presets.pack(fill="x", **pad)
         ttk.Button(presets, text="EazyDemand Ayarlarını Yükle",
                   command=self._apply_eazydemand_preset).pack(side="left")
         ttk.Button(presets, text="Varsayılanlara Dön",
                   command=self._reset_defaults).pack(side="left", padx=8)
 
         # ---- run controls -------------------------------------------------
-        runbar = ttk.Frame(self); runbar.pack(fill="x", **pad)
+        runbar = ttk.Frame(body); runbar.pack(fill="x", **pad)
         self.dry_run_btn = ttk.Button(runbar, text="Kuru Kontrol", command=lambda: self._run(dry_run=True))
         self.dry_run_btn.pack(side="left")
         self.run_btn = ttk.Button(runbar, text="Çalıştır", command=lambda: self._run(dry_run=False))
@@ -254,7 +291,7 @@ class CncPrepGUI(tk.Tk):
         # that's prose, not something you can scan. This mirrors it as a
         # proper table straight from the JSON report, so "which files need a
         # look" is answerable at a glance instead of by re-reading the log.
-        sumframe = ttk.LabelFrame(self, text="Sonuç Özeti")
+        sumframe = ttk.LabelFrame(body, text="Sonuç Özeti")
         sumframe.pack(fill="x", **pad)
         self.summary_tree = ttk.Treeview(
             sumframe, columns=("status", "detail"), show="tree headings", height=4)
@@ -273,7 +310,7 @@ class CncPrepGUI(tk.Tk):
         self.summary_tree.configure(yscrollcommand=sum_scroll.set)
 
         # ---- log --------------------------------------------------------
-        logframe = ttk.LabelFrame(self, text="Kayıt")
+        logframe = ttk.LabelFrame(body, text="Kayıt")
         logframe.pack(fill="both", expand=True, **pad)
         self.log_text = tk.Text(logframe, height=14, wrap="word", state="disabled",
                                 font=("Menlo" if sys.platform == "darwin" else "Consolas", 11))

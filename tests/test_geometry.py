@@ -286,5 +286,131 @@ class TestJoinsTwoCores:
         assert not flag.any()
 
 
+class TestMeasureDesignChange:
+    """
+    "Structurally safe" is not "looks like the design": gap filling can weld
+    a fine design shut and still pass. These pin down the two signals that
+    tell the cases apart -- changed metal area and closed cut-outs.
+    """
+
+    @staticmethod
+    def _plate_with_slots():
+        mask = np.zeros((100, 100), np.uint8)
+        mask[10:90, 10:90] = 255
+        mask[30:70, 30:34] = 0             # enclosed slot
+        mask[30:70, 60:64] = 0             # enclosed slot
+        return mask
+
+    def test_untouched_design_is_preserved(self):
+        base = self._plate_with_slots()
+        info = m.measure_design_change(base, base.copy(), m.Config())
+        assert info["preserved"]
+        assert info["changed_area_pct"] == 0.0
+        assert info["openings_total"] == 2 and info["openings_lost"] == 0
+
+    def test_closed_slot_is_not_preserved_even_when_area_change_is_small(self):
+        base = self._plate_with_slots()
+        final = base.copy()
+        final[30:70, 30:34] = 255          # one slot welded shut
+        info = m.measure_design_change(base, final, m.Config(max_design_change_pct=50.0))
+        assert info["openings_lost"] == 1
+        assert not info["preserved"]
+
+    def test_area_change_over_the_limit_is_not_preserved(self):
+        base = self._plate_with_slots()
+        final = base.copy()
+        final[5:10, 10:90] = 255           # a thickened edge, no slot touched
+        info = m.measure_design_change(base, final, m.Config(max_design_change_pct=1.0))
+        assert info["openings_lost"] == 0
+        assert info["changed_area_pct"] > 1.0
+        assert not info["preserved"]
+
+    def test_removed_metal_counts_as_change(self):
+        base = self._plate_with_slots()
+        final = base.copy()
+        final[10:20, 10:90] = 0            # a trimmed strip
+        info = m.measure_design_change(base, final, m.Config())
+        assert info["removed_area_pct"] > 0
+        assert not info["preserved"]
+
+    def test_empty_design_is_a_no_op(self):
+        empty = np.zeros((20, 20), np.uint8)
+        info = m.measure_design_change(empty, empty, m.Config())
+        assert info["preserved"] and info["changed_area_pct"] == 0.0
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+class TestBinarizeAutoInvert:
+    """invert=auto must tell a black background from a frame drawn to the edge."""
+
+    @staticmethod
+    def _cfg():
+        return m.Config(invert="auto")
+
+    def test_frame_touching_canvas_edge_is_not_inverted(self):
+        # Black frame running to the canvas edge around a mostly white sheet
+        # with a black branch: the frame is metal, not background.
+        g = np.full((200, 400), 255, np.uint8)
+        g[:8], g[-8:], g[:, :8], g[:, -8:] = 0, 0, 0, 0
+        cv2.line(g, (8, 190), (390, 10), 0, 12)
+        mask = m.binarize(g, self._cfg())
+        assert mask[100, 30] == m.BG   # open sheet stays a cut-out
+        assert mask[2, 200] == m.FG    # frame stays metal
+
+    def test_white_art_on_black_background_is_inverted(self):
+        g = np.zeros((200, 400), np.uint8)
+        cv2.circle(g, (200, 100), 60, 255, 14)
+        mask = m.binarize(g, self._cfg())
+        assert mask[100, 140] == m.FG  # the white ring is the metal
+        assert mask[5, 5] == m.BG
+
+
+class TestRasterizeSvgErrors:
+    """A rasteriser that is installed but fails must say so, not claim none exists."""
+
+    SVG = ('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">'
+           '<rect x="5" y="5" width="10" height="10"/></svg>')
+
+    def _fake_tool(self, tmp_path, body):
+        exe = tmp_path / "fake-inkscape"
+        exe.write_text(f"#!{sys.executable}\nimport sys\n{body}\n", encoding="utf-8")
+        exe.chmod(0o755)
+        return str(exe)
+
+    def _setup(self, monkeypatch, tmp_path, exe):
+        monkeypatch.setattr(m, "HAS_CAIROSVG", False)
+        monkeypatch.setattr(m, "find_svg_tool", lambda name: exe if name == "inkscape" else None)
+        svg = tmp_path / "d.svg"
+        svg.write_text(self.SVG, encoding="utf-8")
+        return svg
+
+    def test_no_tool_gives_install_help(self, monkeypatch, tmp_path):
+        svg = self._setup(monkeypatch, tmp_path, None)
+        with pytest.raises(RuntimeError, match="No SVG rasteriser available"):
+            m.rasterize_svg(svg, 20, 20)
+
+    def test_failing_tool_reports_its_own_error(self, monkeypatch, tmp_path):
+        exe = self._fake_tool(tmp_path, "sys.stderr.write('boom: cannot open display\\n'); sys.exit(3)")
+        svg = self._setup(monkeypatch, tmp_path, exe)
+        with pytest.raises(RuntimeError) as err:
+            m.rasterize_svg(svg, 20, 20)
+        msg = str(err.value)
+        assert "installed but could not render" in msg
+        assert "boom: cannot open display" in msg
+        assert "0.92 syntax" in msg  # the legacy command line was tried too
+
+    def test_falls_back_to_legacy_syntax(self, monkeypatch, tmp_path):
+        # Accepts only the 0.92 "-e <out>" form, like an old Inkscape would.
+        body = ("import cv2, numpy as np\n"
+                "a = sys.argv[1:]\n"
+                "if '-e' not in a: sys.exit(1)\n"
+                "img = np.full((20, 20), 255, np.uint8); img[5:15, 5:15] = 0\n"
+                "cv2.imwrite(a[a.index('-e') + 1], img)")
+        exe = self._fake_tool(tmp_path, body)
+        svg = self._setup(monkeypatch, tmp_path, exe)
+        gray = m.rasterize_svg(svg, 20, 20)
+        assert gray.shape[:2] == (20, 20)
+        assert gray[10, 10] < 128 and gray[1, 1] > 128
