@@ -14,6 +14,7 @@ macOS ve Windows'ta aynı şekilde çalışır.
 - [En Hızlı Yol (EazyDemand)](#en-hızlı-yol-eazydemand)
 - [Komut Satırı (CLI)](#komut-satırı-cli)
 - [Listing Kiti](#listing-kiti)
+- [Yerel AI ile toplu üretim (mflux)](#yerel-ai-ile-toplu-üretim-mflux)
 - [Sorun Giderme](#sorun-giderme)
 
 ## Ne İşe Yarar
@@ -228,6 +229,46 @@ Oda mockup'ları ve renk paneli ChatGPT'de, kesim dosyasının PNG'si yüklenere
   {"file": "yatak1.jpg", "box": [500, 250, 1200, 500], "light": "right"}
 ]
 ```
+
+## Yerel AI ile toplu üretim (mflux)
+
+`batch_generate.py`, prompt paketlerimizden birini (ör. `53_50_yeni_nisler_standart.md`) Mac'te
+yerel FLUX.1 schnell modeliyle toplu olarak üretir ve her görseli Cut-Ready'nin kendi siyah-beyaz
+ayrımıyla kontrol eder:
+
+- `keep/`: tek parça çıkanlar, bunlara bakarsın
+- `reject/`: kopuk parçası olanlar veya boş görseller
+- `report.csv`: her görselin parça sayısı
+
+Apple Silicon (M1 ve sonrası) gerekir; 16 GB RAM'de 4-bit modda çalışır. mflux bu projenin bağımlılığı
+değildir, kendi ortamına kurulur:
+
+```bash
+python3 -m venv ~/mflux-env
+~/mflux-env/bin/pip install -U mflux
+```
+
+İlk çalıştırmada model (~30 GB) Hugging Face'ten iner. Diskte yer aç, interneti açık bırak. İndirme
+bittikten sonra modeli 4-bit olarak kaydet; her çalıştırmada yeniden dönüştürmesin, hızlı açılsın:
+
+```bash
+~/mflux-env/bin/mflux-save --model schnell --quantize 4 --path ~/flux-schnell-4bit
+```
+
+Sonra paketten birkaç prompt dene:
+
+```bash
+.venv/bin/python3 batch_generate.py -p 53_50_yeni_nisler_standart.md -o gen_out \
+    --only 1,9,29 --variants 3 \
+    --mflux ~/mflux-env/bin/mflux-generate --model-path ~/flux-schnell-4bit
+```
+
+`--only` vermezsen paketin tamamını üretir (50 prompt × 3 varyant). Gece çalışmaya bırakılabilir.
+`--dry-run`, hiçbir şey üretmeden çalışacak komutları yazdırır.
+
+FLUX.1 schnell promptun en fazla ~256 token'ını okur. Standart formattaki uzun Technical bloğu bu
+yüzden yerelde aynı kuralları taşıyan kısa bir sürümle değiştirilir; tasarım tarifi ve Style satırı
+olduğu gibi kalır.
 
 ## Sorun Giderme
 
