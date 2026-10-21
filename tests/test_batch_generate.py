@@ -146,3 +146,24 @@ def test_lora_runs_use_z_image_with_trigger_and_unpack_zip(tmp_path):
     assert cmd[cmd.index("--prompt") + 1].startswith("ifcsteel style, ")
     assert cmd[cmd.index("--model") + 1] == bg.ZIMAGE_MODEL and "--quantize" not in cmd
     assert cmd[cmd.index("--lora-paths") + 1] == lora and cmd[cmd.index("--lora-scales") + 1] == "0.8"
+
+
+def test_smoothing_keeps_parts_and_size_gate_rejects_hairlines(tmp_path):
+    ragged = np.zeros((400, 800), np.uint8)
+    cv2.rectangle(ragged, (60, 60), (740, 340), 255, 40)
+    rng = np.random.default_rng(0)
+    edge = rng.random(ragged.shape) < 0.15                       # brush fringe along the outline
+    ragged[cv2.dilate(ragged, np.ones((5, 5), np.uint8)) - ragged > 0] |= np.where(edge, 255, 0).astype(np.uint8)[
+        cv2.dilate(ragged, np.ones((5, 5), np.uint8)) - ragged > 0]
+    smooth = bg.smooth_edges(ragged)
+    assert cv2.connectedComponents(smooth, connectivity=8)[0] == cv2.connectedComponents(ragged, connectivity=8)[0]
+
+    bold = np.zeros((700, 1200), np.uint8)                      # 1344-px class image, like mflux output
+    cv2.rectangle(bold, (20, 100), (1180, 600), 255, 40)
+    spokes = bold.copy()
+    for a in range(0, 180, 30):                                  # hairline wheel spokes inside the frame
+        t = np.deg2rad(a)
+        cv2.line(spokes, (600 - int(200 * np.cos(t)), 350 - int(200 * np.sin(t))),
+                 (600 + int(200 * np.cos(t)), 350 + int(200 * np.sin(t))), 255, 1)
+    assert bg.min_size_cm(bg.thinnest_pct(bold)) < bg.MAX_MIN_CM
+    assert bg.min_size_cm(bg.thinnest_pct(spokes)) > bg.MAX_MIN_CM

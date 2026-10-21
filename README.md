@@ -271,9 +271,12 @@ Sonra paketten birkaç prompt dene:
 koy, akşam `gece.command`'a çift tıkla. Script Mac'in uyumasını engeller, paketlerden daha önce
 üretilmemiş rastgele prompt'lar seçer ve her birinden 2 varyant olmak üzere ~50 görsel üretir. Sabah:
 
-- `gece/<tarih>/sheet.jpg`: tek parça çıkanların numaralı özeti. En kalın çizgiliden inceye sıralı;
-  kalın olanlar küçük bedende de kesilir. "ince" etiketli olanların min ölçüsü büyük çıkar.
-- `gece/<tarih>/keep/`: o tasarımların saf siyah-beyaz PNG'leri. Doğrudan listing kitine verilebilir.
+- `gece/<tarih>/sheet.jpg`: kesime hazır olanların özeti, tahmini en küçük ölçüsüyle ("min ~45 cm"),
+  küçükten büyüğe sıralı. Birkaç küçük kopuk parçası silinerek kurtarılanlar "[onarıldı]" etiketli.
+- `gece/<tarih>/reject_sheet.jpg`: elenenler ve nedeni: birden çok parça, ya da jant teli gibi kıl
+  inceliğinde yerler yüzünden ancak 90 cm üstünde kesilebilenler (`--max-min-cm` ile değişir).
+- `gece/<tarih>/keep/`: o tasarımların saf siyah-beyaz, kenarları yumuşatılmış PNG'leri. Doğrudan
+  listing kitine verilebilir.
 - `gece/history.csv`: hangi prompt hangi gece üretildi. Bütün kütüphane bitmeden aynı prompt tekrar seçilmez.
 
 Görsel sayısı için `COUNT=80 ./gece.command`. mflux ya da model başka bir yerdeyse `MFLUX=...` ve
