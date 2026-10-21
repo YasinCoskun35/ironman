@@ -281,6 +281,8 @@ koy, akşam `gece.command`'a çift tıkla. Script Mac'in uyumasını engeller, p
   `.venv/bin/python3 batch_generate.py --recheck gece/<tarih>`
 - `gece/history.csv`: hangi prompt hangi gece üretildi. Bütün kütüphane bitmeden aynı prompt tekrar seçilmez.
 
+`gece.command` artık varsayılan olarak **Z-Image Turbo** (4-bit, 9 adım) ile üretir; çizimde schnell'den
+belirgin iyidir ve uzun prompt'u (Technical bloğu dahil) tam okur. Eskisi için `ENGINE=schnell ./gece.command`.
 Görsel sayısı için `COUNT=80 ./gece.command`. mflux ya da model başka bir yerdeyse `MFLUX=...` ve
 `MODEL=...` ile ver.
 

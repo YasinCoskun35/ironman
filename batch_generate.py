@@ -91,9 +91,20 @@ def nearest_ratio(r: str) -> str:
     return min(RATIO_PX, key=lambda k: abs(RATIO_PX[k][0] / RATIO_PX[k][1] - want))
 
 
-def localize(text: str) -> str:
-    """Swap a standard-format Technical block for the short one; leave other prompts alone."""
+# What FLUX and Z-Image got wrong on our prompts so far, said outright.
+LOCAL_DONTS = ("Black and white only, no color, no gray, no gradient, no mist, no ink wash, "
+               "no screws, no mounting holes.")
+
+
+def localize(text: str, full: bool = False) -> str:
+    """
+    Schnell reads ~256 tokens, so a standard-format Technical block becomes the
+    short one. Z-Image's Qwen3 text encoder reads the whole prompt: it keeps the
+    full block (1.2% rule, base bar sentence) plus the local don'ts.
+    """
     lines = [l for l in text.splitlines() if l.strip()]
+    if full:
+        return " ".join(lines + [LOCAL_DONTS])
     if any(l.startswith("Technical:") for l in lines):
         lines = [l for l in lines if not l.startswith("Technical:")] + [SHORT_TECH]
     return " ".join(lines)
@@ -123,21 +134,24 @@ def resolve_lora(path: str, dest: Path) -> str:
 
 
 def mflux_cmd(exe: str, p: Prompt, seed: int, out: Path, steps: int, quantize: int,
-              model_path: Optional[str], lora: Optional[str] = None, lora_scale: float = 1.0) -> List[str]:
+              model_path: Optional[str], lora: Optional[str] = None, lora_scale: float = 1.0,
+              engine: str = "schnell") -> List[str]:
     w, h = RATIO_PX[p.ratio]
-    prompt = localize(p.text)
+    # Our style LoRA is trained on Z-Image Turbo (mflux no longer trains FLUX.1),
+    # so a LoRA run always uses that model; the trigger word switches it on.
+    zimage = engine == "z-image" or bool(lora)
+    prompt = localize(p.text, full=zimage)
     if lora:
-        # Our style LoRA is trained on Z-Image Turbo (mflux no longer trains
-        # FLUX.1), so a LoRA run uses that model; the trigger word switches it on.
         prompt = f"{TRIGGER} style, {prompt}"
     cmd = [exe, "--prompt", prompt, "--steps", str(steps), "--seed", str(seed),
            "--width", str(w), "--height", str(h), "--output", str(out)]
-    if lora:
+    if zimage:
         if model_path:
             cmd += ["--model", model_path, "--base-model", "z-image-turbo"]
         else:
             cmd += ["--model", ZIMAGE_MODEL]
-        cmd += ["--lora-paths", lora, "--lora-scales", str(lora_scale)]
+        if lora:
+            cmd += ["--lora-paths", lora, "--lora-scales", str(lora_scale)]
     elif model_path:
         # Current mflux takes a saved model as --model <dir> plus its family;
         # the older --path flag is gone.
@@ -389,7 +403,7 @@ def recheck(night: Path, max_min_cm: Optional[float] = MAX_MIN_CM) -> int:
 def run(packs: Sequence[Path], out: Path, only: Optional[set], variants: int, seed0: int, steps: int,
         quantize: int, exe: str, model_path: Optional[str], dry_run: bool, check: bool,
         count: Optional[int] = None, nightly: bool = False, lora: Optional[str] = None,
-        lora_scale: float = 1.0, max_min_cm: Optional[float] = MAX_MIN_CM) -> int:
+        lora_scale: float = 1.0, max_min_cm: Optional[float] = MAX_MIN_CM, engine: str = "schnell") -> int:
     import datetime as dt
     import random
     history = out / "history.csv"
@@ -416,7 +430,7 @@ def run(packs: Sequence[Path], out: Path, only: Optional[set], variants: int, se
         for v in range(variants):
             seed = seed0 + v if count is None else rng.randint(1, 2 ** 31 - 1)
             img = raw / f"{slugify(j.pack)[:18]}_{p.number:02d}_{slugify(p.name)}_s{seed}.png"
-            cmd = mflux_cmd(exe, p, seed, img, steps, quantize, model_path, lora, lora_scale)
+            cmd = mflux_cmd(exe, p, seed, img, steps, quantize, model_path, lora, lora_scale, engine)
             if dry_run:
                 print(" ".join(shlex.quote(c) for c in cmd))
                 continue
@@ -479,6 +493,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--mflux", default=None,
                     help="path to mflux-generate (or mflux-generate-z-image-turbo with --lora)")
     ap.add_argument("--model-path", default=None, help="a model saved with mflux-save (loads much faster)")
+    ap.add_argument("--engine", choices=["schnell", "z-image"], default="schnell",
+                    help="schnell (FLUX.1, 4 steps) or z-image (Z-Image Turbo 4-bit, 9 steps, better drawing)")
     ap.add_argument("--lora", default=None,
                     help="our style LoRA (.safetensors or the checkpoint .zip from mflux-train); uses Z-Image Turbo")
     ap.add_argument("--lora-scale", type=float, default=1.0, help="LoRA strength (0.6-1.0)")
@@ -492,11 +508,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not a.pack or not a.output:
         ap.error("-p/--pack and -o/--output are required (unless --recheck)")
     only = {int(x) for x in a.only.split(",") if x.strip()} or None
-    steps = a.steps or (9 if a.lora else 4)
-    exe = a.mflux or ("mflux-generate-z-image-turbo" if a.lora else "mflux-generate")
+    engine = "z-image" if a.lora else a.engine
+    steps = a.steps or (9 if engine == "z-image" else 4)
+    exe = a.mflux or ("mflux-generate-z-image-turbo" if engine == "z-image" else "mflux-generate")
     return run(a.pack, a.output, only, a.variants, a.seed, steps, a.quantize, exe,
                a.model_path, a.dry_run, not a.no_check, a.count, a.nightly, a.lora, a.lora_scale,
-               a.max_min_cm or None)
+               a.max_min_cm or None, engine)
 
 
 if __name__ == "__main__":

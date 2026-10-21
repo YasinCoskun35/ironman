@@ -179,3 +179,12 @@ def test_recheck_rebuilds_a_finished_night(tmp_path):
     assert bg.main(["--recheck", str(out)]) == 0
     assert sorted(x.name for x in (out / "keep").iterdir()) == before
     assert (out / "recheck.csv").exists() and (out / "sheet.jpg").exists()
+
+
+def test_z_image_engine_without_lora_keeps_full_prompt(tmp_path):
+    p = bg.parse_pack(PACK)[0]
+    cmd = bg.mflux_cmd("mflux-generate-z-image-turbo", p, 3, tmp_path / "a.png", 9, 4, None, engine="z-image")
+    prompt = cmd[cmd.index("--prompt") + 1]
+    assert "long rules" in prompt and bg.LOCAL_DONTS in prompt and not prompt.startswith("ifcsteel")
+    assert cmd[cmd.index("--model") + 1] == bg.ZIMAGE_MODEL and "--lora-paths" not in cmd
+    assert "--quantize" not in cmd and "--base-model" not in cmd

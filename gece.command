@@ -17,9 +17,14 @@ PACKS=(prompts/*.md)
 if [ ${#PACKS[@]} -eq 0 ]; then
   echo "prompts/ klasöründe prompt paketi (.md) yok. Paketleri oraya kopyala."; exit 1
 fi
+# Z-Image Turbo çizimde schnell'den belirgin iyi; kuruluysa varsayılan o. ENGINE=schnell ile eskisi.
+ENGINE="${ENGINE:-z-image}"; [ -x "$MFLUX_Z" ] || ENGINE="schnell"
 if [ -f "$LORA" ]; then
   echo "LoRA ile üretim (Z-Image Turbo): $LORA"
   ENGINE_ARGS=(--mflux "$MFLUX_Z" --lora "$LORA")
+elif [ "$ENGINE" = "z-image" ]; then
+  echo "Z-Image Turbo ile üretim (LoRA yok)"
+  ENGINE_ARGS=(--mflux "$MFLUX_Z" --engine z-image)
 else
   ENGINE_ARGS=(--mflux "$MFLUX" --model-path "$MODEL"); [ -d "$MODEL" ] || ENGINE_ARGS=(--mflux "$MFLUX")
 fi
