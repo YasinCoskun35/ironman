@@ -179,7 +179,9 @@ def write_train_config(out: Path, trigger: str, epochs: int = 15, size: Optional
     A LoRA config for mflux-train on a 16 GB Mac. mflux no longer trains FLUX.1,
     so this targets Z-Image Turbo (Apache 2.0, not gated; batch_generate --lora
     then generates with it). Memory: 4-bit base, disk-cached encodings
-    (low_ram) and gradient checkpointing; the resolution follows the dataset.
+    (low_ram), gradient checkpointing and a capped MLX buffer cache (without
+    it the first run sat at 26 GB on a 16 GB Mac, swapping); the resolution
+    follows the dataset.
     """
     out = out.expanduser().resolve()
     images = sorted(out.glob("[0-9][0-9][0-9][0-9].png"))
@@ -204,6 +206,7 @@ def write_train_config(out: Path, trigger: str, epochs: int = 15, size: Optional
         "max_resolution": size,
         "low_ram": True,
         "gradient_checkpointing": True,
+        "cache_limit_gb": 2,
         "training_loop": {"num_epochs": epochs, "batch_size": 1, "timestep_low": 4, "timestep_high": 9},
         "optimizer": {"name": "AdamW", "learning_rate": 1e-4},
         "checkpoint": {"save_frequency": 100, "output_path": str(out.parent / "lora_train")},
