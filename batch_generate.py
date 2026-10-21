@@ -45,7 +45,8 @@ RATIO_PX = {"16:9": (1344, 768), "1:1": (1024, 1024), "3:4": (896, 1152), "9:16"
 # Local runs swap it for this short version, which keeps the rules that matter.
 SHORT_TECH = ("Pure solid black on pure white, flat 2D laser-cut steel cut file, one single connected piece, "
               "nothing floating, shapes merge where they cross, bold lines, no hairlines, no dots, "
-              "no text, no shadow, no gray, no mockup, generous white margin.")
+              "black and white only, no color, no gray, no gradient, no mist, no ink wash, no text, no shadow, "
+              "no mockup, no screws, no mounting holes, generous white margin.")
 
 
 @dataclass
@@ -194,6 +195,25 @@ def contact_sheet(items: List[tuple], dest: Path, cols: int = 4, cell: int = 600
     sheet.save(dest, quality=88)
 
 
+# A reject whose floating bits together are under this share of the metal is
+# saved as "onarıldı" with only the main body kept: losing a stray leaf or a dot
+# is a trim, losing a moon is not, and the morning sheet shows which it was.
+REPAIR_MAX_SHARE = 0.03
+
+
+def drop_islands(mask):
+    """(main body only, share of metal removed) — the largest component kept, the rest dropped."""
+    import cv2
+    import numpy as np
+    n, lab, st, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if n <= 2:
+        return mask, 0.0
+    areas = st[1:, cv2.CC_STAT_AREA]
+    main = 1 + int(np.argmax(areas))
+    share = 1.0 - float(areas.max()) / float(areas.sum())
+    return np.where(lab == main, 255, 0).astype(np.uint8), share
+
+
 @dataclass
 class Job:
     pack: str
@@ -247,7 +267,7 @@ def run(packs: Sequence[Path], out: Path, only: Optional[set], variants: int, se
     print(f"[gece] {len(jobs)} prompt × {variants} varyant = {len(jobs) * variants} görsel -> {out}", flush=True)
 
     rng = random.Random()
-    rows, kept = [], []
+    rows, kept, rejected = [], [], []
     for j in jobs:
         p = j.prompt
         for v in range(variants):
@@ -275,12 +295,22 @@ def run(packs: Sequence[Path], out: Path, only: Optional[set], variants: int, se
                 pieces = cv2.connectedComponents(mask, connectivity=8)[0] - 1
                 verdict = "tek parça" if pieces == 1 else f"{pieces} parça"
                 thin = thinnest_pct(mask) if pieces == 1 else ""
-            if pieces == 1:
-                save_clean(mask, keep / img.name)
+            repaired = None
+            if pieces > 1:
+                body, share = drop_islands(mask)
+                if share <= REPAIR_MAX_SHARE:
+                    repaired, mask = share, body
+                    thin = thinnest_pct(mask)
+                    verdict = f"onarıldı ({pieces - 1} küçük parça silindi, %{share * 100:.1f})"
+            if pieces == 1 or repaired is not None:
+                name = img.name if repaired is None else img.stem + "_onarildi.png"
+                save_clean(mask, keep / name)
                 flag = " ince" if thin != "" and thin < 0.35 else ""
-                kept.append((thin if thin != "" else 0.0, keep / img.name, f"#{p.number} {p.name[:22]}{flag}"))
+                tag = " [onarıldı]" if repaired is not None else ""
+                kept.append((thin if thin != "" else 0.0, keep / name, f"#{p.number} {p.name[:20]}{flag}{tag}"))
             else:
                 shutil.copy2(img, reject / img.name)
+                rejected.append((reject / img.name, f"#{p.number} {p.name[:20]} {verdict}"))
             rows.append([j.pack, p.number, p.name, seed, pieces, thin, verdict])
             print(f"       -> {verdict}" + (f", en ince %{thin}" if thin != "" else ""), flush=True)
 
@@ -301,7 +331,10 @@ def run(packs: Sequence[Path], out: Path, only: Optional[set], variants: int, se
     # thickest-first: those cut at the smallest (cheapest) sizes are worth looking at first
     kept.sort(key=lambda t: -t[0])
     contact_sheet([(pth, label) for _, pth, label in kept], out / "sheet.jpg")
-    print(f"\nbitti: {len(rows)} görsel, {len(kept)} tek parça -> {keep}" + (f"  (özet: {out / 'sheet.jpg'})" if kept else ""))
+    contact_sheet(rejected, out / "reject_sheet.jpg")
+    fixed = sum(1 for _, _, label in kept if label.endswith("[onarıldı]"))
+    print(f"\nbitti: {len(rows)} görsel, {len(kept)} kullanılabilir ({fixed} tanesi onarıldı) -> {keep}"
+          + (f"  (özet: {out / 'sheet.jpg'})" if kept else ""))
     return 0
 
 
