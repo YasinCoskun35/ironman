@@ -197,11 +197,38 @@ def thinnest_pct(mask) -> float:
     return round(float(np.percentile(2 * dt[sk], 5)) / (ink_w * scale) * 100, 3)
 
 
+def smooth_edges(mask):
+    """
+    Take the ragged, brush-like fringe off AI edges (it is cut as is and shows
+    through the powder coat): upsample, blur about 0.1% of the width, threshold.
+    Kept only if the part count does not change, so nothing thin gets cut off.
+    """
+    import cv2
+    import numpy as np
+    h, w = mask.shape
+    big = cv2.resize(mask, (w * 2, h * 2), interpolation=cv2.INTER_LINEAR)
+    sigma = max(1.0, w * 2 * 0.001)
+    soft = cv2.GaussianBlur(big, (0, 0), sigma)
+    out = np.where(soft > 127, 255, 0).astype(np.uint8)
+    before = cv2.connectedComponents(mask, connectivity=8)[0]
+    return out if cv2.connectedComponents(out, connectivity=8)[0] == before else mask
+
+
 def save_clean(mask, dest: Path) -> None:
     """Pure black-on-white PNG of the mask, ready for Cut-Ready or the listing kit."""
     import cv2
     import numpy as np
-    cv2.imwrite(str(dest), np.where(mask > 0, 0, 255).astype("uint8"))
+    cv2.imwrite(str(dest), np.where(smooth_edges(mask) > 0, 0, 255).astype("uint8"))
+
+
+def min_size_cm(thin_pct: float) -> float:
+    """
+    Smallest long side (cm) at which the thinnest parts reach EazyDemand's 1.8 mm,
+    from thinnest_pct. Cut-Ready's own size search gives the exact figure but
+    takes minutes per design; this is instant and is what catches hairline
+    spokes and needle tips overnight. The listing kit still runs the exact one.
+    """
+    return round(MIN_STROKE_CM / max(thin_pct, 1e-6) * 100, 1)
 
 
 def contact_sheet(items: List[tuple], dest: Path, cols: int = 4, cell: int = 600) -> None:
@@ -233,6 +260,10 @@ def contact_sheet(items: List[tuple], dest: Path, cols: int = 4, cell: int = 600
 # saved as "onarıldı" with only the main body kept: losing a stray leaf or a dot
 # is a trim, losing a moon is not, and the morning sheet shows which it was.
 REPAIR_MAX_SHARE = 0.03
+# Wall pieces sell up to 150 cm; a design that only survives from 90 cm up
+# leaves one or two sizes and needs hand work, so it goes to the reject sheet.
+MAX_MIN_CM = 90.0
+MIN_STROKE_CM = 0.18
 
 
 def drop_islands(mask):
@@ -283,7 +314,7 @@ def pick_jobs(packs: Sequence[Path], only: Optional[set], count: Optional[int], 
 def run(packs: Sequence[Path], out: Path, only: Optional[set], variants: int, seed0: int, steps: int,
         quantize: int, exe: str, model_path: Optional[str], dry_run: bool, check: bool,
         count: Optional[int] = None, nightly: bool = False, lora: Optional[str] = None,
-        lora_scale: float = 1.0) -> int:
+        lora_scale: float = 1.0, max_min_cm: Optional[float] = MAX_MIN_CM) -> int:
     import datetime as dt
     import random
     history = out / "history.csv"
@@ -339,12 +370,25 @@ def run(packs: Sequence[Path], out: Path, only: Optional[set], variants: int, se
                     repaired, mask = share, body
                     thin = thinnest_pct(mask)
                     verdict = f"onarıldı ({pieces - 1} küçük parça silindi, %{share * 100:.1f})"
+            min_cm = None
             if pieces == 1 or repaired is not None:
                 name = img.name if repaired is None else img.stem + "_onarildi.png"
                 save_clean(mask, keep / name)
-                flag = " ince" if thin != "" and thin < 0.35 else ""
+                if max_min_cm and thin != "":
+                    min_cm = min_size_cm(thin)
+                    if min_cm > max_min_cm:
+                        (keep / name).replace(reject / name)
+                        verdict = f"ince detay: en küçük ~{min_cm:.0f} cm"
+                        rejected.append((reject / name, f"#{p.number} {p.name[:20]} {verdict}"))
+                        rows.append([j.pack, p.number, p.name, seed, pieces, thin, verdict])
+                        print(f"       -> {verdict}", flush=True)
+                        continue
+                size = f" min ~{min_cm:.0f} cm" if min_cm else (" ince" if thin != "" and thin < 0.35 else "")
                 tag = " [onarıldı]" if repaired is not None else ""
-                kept.append((thin if thin != "" else 0.0, keep / name, f"#{p.number} {p.name[:20]}{flag}{tag}"))
+                sort_key = -min_cm if min_cm else (thin if thin != "" else 0.0)
+                kept.append((sort_key, keep / name, f"#{p.number} {p.name[:20]}{size}{tag}"))
+                if min_cm:
+                    verdict += f", en küçük ~{min_cm:.0f} cm"
             else:
                 shutil.copy2(img, reject / img.name)
                 rejected.append((reject / img.name, f"#{p.number} {p.name[:20]} {verdict}"))
@@ -365,7 +409,8 @@ def run(packs: Sequence[Path], out: Path, only: Optional[set], variants: int, se
                 w.writerow(["pack", "no", "name", "date"])
             for j in jobs:
                 w.writerow([j.pack, j.prompt.number, j.prompt.name, dt.date.today().isoformat()])
-    # thickest-first: those cut at the smallest (cheapest) sizes are worth looking at first
+    # smallest minimum size first (or thickest first without the size check):
+    # those sell from the cheapest sizes up and are worth looking at first
     kept.sort(key=lambda t: -t[0])
     contact_sheet([(pth, label) for _, pth, label in kept], out / "sheet.jpg")
     contact_sheet(rejected, out / "reject_sheet.jpg")
@@ -395,13 +440,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     help="our style LoRA (.safetensors or the checkpoint .zip from mflux-train); uses Z-Image Turbo")
     ap.add_argument("--lora-scale", type=float, default=1.0, help="LoRA strength (0.6-1.0)")
     ap.add_argument("--no-check", action="store_true", help="skip the one-piece check")
+    ap.add_argument("--max-min-cm", type=float, default=MAX_MIN_CM,
+                    help="reject designs whose thinnest parts need a long side above this (0 = no size check)")
     ap.add_argument("--dry-run", action="store_true", help="print the commands, generate nothing")
     a = ap.parse_args(argv)
     only = {int(x) for x in a.only.split(",") if x.strip()} or None
     steps = a.steps or (9 if a.lora else 4)
     exe = a.mflux or ("mflux-generate-z-image-turbo" if a.lora else "mflux-generate")
     return run(a.pack, a.output, only, a.variants, a.seed, steps, a.quantize, exe,
-               a.model_path, a.dry_run, not a.no_check, a.count, a.nightly, a.lora, a.lora_scale)
+               a.model_path, a.dry_run, not a.no_check, a.count, a.nightly, a.lora, a.lora_scale,
+               a.max_min_cm or None)
 
 
 if __name__ == "__main__":
