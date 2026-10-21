@@ -53,7 +53,8 @@ def test_mflux_cmd_uses_ratio_size_and_quantize(tmp_path):
     assert cmd[cmd.index("--width") + 1] == "768" and cmd[cmd.index("--height") + 1] == "1344"
     assert cmd[cmd.index("--quantize") + 1] == "4" and cmd[cmd.index("--seed") + 1] == "7"
     saved = bg.mflux_cmd("mflux-generate", p, 7, tmp_path / "a.png", 4, 4, "/m")
-    assert "--quantize" not in saved and saved[saved.index("--path") + 1] == "/m"
+    assert "--quantize" not in saved and "--path" not in saved
+    assert saved[saved.index("--model") + 1] == "/m" and saved[saved.index("--base-model") + 1] == "schnell"
 
 
 def test_nearest_ratio():

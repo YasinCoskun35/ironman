@@ -104,7 +104,9 @@ def mflux_cmd(exe: str, p: Prompt, seed: int, out: Path, steps: int, quantize: i
     cmd = [exe, "--prompt", localize(p.text), "--steps", str(steps), "--seed", str(seed),
            "--width", str(w), "--height", str(h), "--output", str(out)]
     if model_path:
-        cmd += ["--model", "schnell", "--path", model_path]
+        # Current mflux takes a saved model as --model <dir> plus its family;
+        # the older --path flag is gone.
+        cmd += ["--model", model_path, "--base-model", "schnell"]
     else:
         cmd += ["--model", "schnell", "--quantize", str(quantize)]
     return cmd
