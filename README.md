@@ -318,6 +318,14 @@ gerekmez). Eğitilen LoRA ile üretim de Z-Image Turbo ile yapılır.
   `lora_train/preview/` altına veri setinde olmayan bir konunun (deniz feneri) önizlemesi düşer.
   Önizleme siyah-beyaz kesim dosyası gibi görünmeye başladığında o checkpoint iyidir.
 - Yavaşsa (adım başına dakikalar): `--train-size 512 --epochs 10` ile ayar dosyasını yeniden yaz.
+
+### Mac'e sığmıyorsa: Kaggle (ücretsiz GPU)
+
+16 GB Mac'te mflux-train ~26 GB kullanıp swap'a düştü. `kaggle_lora.ipynb` aynı veri setini Kaggle'ın
+ücretsiz T4 GPU'sunda ai-toolkit ile Z-Image Turbo üzerinde eğitir (2000 adım, 512/768 px,
+her 250 adımda kayıt ve önizleme). Adımlar not defterinin ilk hücresinde. Çıkan
+`ifcsteel_lora_sonuc.zip` içinden önizlemesi en iyi olan `.safetensors`'ı
+`lora/ifcsteel.safetensors` olarak kopyala; `gece.command` onu kullanır.
 - Yarıda kalırsa: `mflux-train --resume lora_train/checkpoints/<son>_checkpoint.zip`
 - Seçtiğin checkpoint'i `lora/ifcsteel.zip` olarak kopyala; `gece.command` onu görünce LoRA ile üretir.
   Elle: `batch_generate.py ... --lora lora/ifcsteel.zip --lora-scale 0.8`
