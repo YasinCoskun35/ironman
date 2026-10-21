@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .claude/
 .DS_Store
+prompts/
+gece/
+gen_out/

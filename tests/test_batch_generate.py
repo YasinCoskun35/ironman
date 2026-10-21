@@ -74,3 +74,47 @@ def test_check_cuttable_counts_pieces(tmp_path):
 
 def test_slugify_turkish():
     assert bg.slugify("Dağlı Aile Tabelası") == "dagli-aile-tabelasi"
+
+
+def _fake_mflux(tmp_path):
+    """A stand-in for mflux-generate: writes a framed square (one piece) or, for odd seeds, adds a floating dot."""
+    exe = tmp_path / "fake-mflux"
+    exe.write_text(
+        f"#!{sys.executable}\n"
+        "import sys, cv2, numpy as np\n"
+        "a = sys.argv[1:]; out = a[a.index('--output') + 1]; seed = int(a[a.index('--seed') + 1])\n"
+        "w = int(a[a.index('--width') + 1]); h = int(a[a.index('--height') + 1])\n"
+        "img = np.full((h, w), 255, np.uint8); cv2.rectangle(img, (60, 60), (w - 60, h - 60), 0, 30)\n"
+        "if seed % 2: cv2.circle(img, (w // 2, h // 2), 40, 0, -1)\n"
+        "cv2.imwrite(out, img)\n", encoding="utf-8")
+    exe.chmod(0o755)
+    return str(exe)
+
+
+def test_nightly_run_sorts_records_history_and_skips_done(tmp_path):
+    pack = tmp_path / "pack.md"
+    pack.write_text(PACK, encoding="utf-8")
+    exe = _fake_mflux(tmp_path)
+    out = tmp_path / "gece"
+    assert bg.run([pack], out, None, 2, 1, 4, 4, exe, None, False, True, count=2, nightly=False) == 0
+    report = (out / "report.csv").read_text(encoding="utf-8")
+    assert report.count("\n") == 3                     # header + 1 prompt x 2 variants
+    assert len(list((out / "keep").iterdir())) + len(list((out / "reject").iterdir())) == 2
+    first = (out / "history.csv").read_text(encoding="utf-8")
+    # a second night must pick the prompt not run yet
+    assert bg.run([pack], out, None, 2, 1, 4, 4, exe, None, False, True, count=2, nightly=False) == 0
+    second = (out / "history.csv").read_text(encoding="utf-8")
+    names = {line.split(",")[2] for line in second.strip().splitlines()[1:]}
+    assert names == {"Bambu ve Ay", "Sörfçü"}
+    assert len(first.strip().splitlines()) == 2
+
+
+def test_kept_files_are_pure_black_and_white(tmp_path):
+    pack = tmp_path / "pack.md"
+    pack.write_text(PACK, encoding="utf-8")
+    out = tmp_path / "o"
+    bg.run([pack], out, {2}, 1, 2, 4, 4, _fake_mflux(tmp_path), None, False, True)   # even seed: one piece
+    kept = list((out / "keep").iterdir())
+    assert len(kept) == 1 and (out / "sheet.jpg").exists()
+    vals = set(np.unique(cv2.imread(str(kept[0]), cv2.IMREAD_GRAYSCALE)).tolist())
+    assert vals <= {0, 255}
