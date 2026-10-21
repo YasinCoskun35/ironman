@@ -13,6 +13,7 @@ macOS ve Windows'ta aynı şekilde çalışır.
 - [Formu Tanı](#formu-tanı)
 - [En Hızlı Yol (EazyDemand)](#en-hızlı-yol-eazydemand)
 - [Komut Satırı (CLI)](#komut-satırı-cli)
+- [Listing Kiti](#listing-kiti)
 - [Sorun Giderme](#sorun-giderme)
 
 ## Ne İşe Yarar
@@ -170,6 +171,62 @@ Bir tasarımın en küçük boyutlarını (tasarım korunarak ve sadece kırılm
 
 ```bash
 .venv/bin/python3 mycode.py -i ./tasarim.svg -o /tmp/x --suggest-size --dry-run
+```
+
+## Listing Kiti
+
+`listing_kit.py`, Firefly'dan seçtiğin tek bir siyah-beyaz tasarımdan Etsy'ye yüklemeye hazır bir
+klasör çıkarır. Senin yazman gereken tek şey title, tag ve giriş paragrafı; onların promptu da
+klasörde hazır.
+
+**Arayüzden:** Girdi'de tasarım dosyasını, Çıktı klasörü'nde ana klasörünü seç. Formun altındaki
+**Etsy Listing Kiti** bölümünde tasarım adını yaz, ürün tipini ve temayı seç, **Listing Kiti
+Oluştur**'a bas. Bitince **Kit Klasörünü Aç** seni doğrudan `<çıktı klasörü>/kits/<tasarım-adı>/`
+klasörüne götürür. Kesim dosyaları formdaki min kalınlık, kerf ve sadeleştirme değerleriyle üretilir.
+
+**Terminalden:**
+
+```bash
+.venv/bin/python3 listing_kit.py -i ./tasarim.png -o ./kits --name "Ocean Wave Bundle"
+```
+
+Çıktı (`kits/ocean-wave-bundle/`):
+
+| Dosya | İçerik |
+|---|---|
+| `listing.md` | Bedenler, Etsy Size değerleri (≤ 20 karakter), fiyat tablosu (maliyet / liste / görünen / kâr), SKU, varyasyonlar, açıklamanın sabit blokları, gümrük satırı, title–tag–giriş promptu |
+| `cut/<beden>/` | Her beden için kesim dosyaları (SVG + DXF + 4500×5100 PNG), EazyDemand ayarlarıyla |
+| `size_guide.jpg`, `size_collage.jpg` | 175 cm insanla ölçek görselleri |
+| `kit.json` | Hepsi makinenin okuyacağı formatta |
+
+Bedenler ve fiyatlar listing promptundaki (v6) kurallarla hesaplanır. En küçük beden, Cut-Ready'nin
+**tasarım korunarak** ölçüsüdür; bu arama birkaç dakika sürer. Ölçüyü zaten biliyorsan `--min-cm 45`
+ile atla. SKU'lar `kits/sku_ledger.csv` defterinden sırayla verilir; aynı gün iki listinge aynı SKU
+düşmez.
+
+Sık kullanılan bayraklar:
+
+| Bayrak | Ne yapar |
+|---|---|
+| `--type privacy` | Privacy panel: en büyük beden 240 cm |
+| `--theme deco` | Alternatif renkleri seçer: `modern`, `deco`, `botanical`, `coastal`, `privacy`, `wildlife`, `gothic`, `western`, `kitchen`, `mancave`, `family`, `kids` |
+| `--min-cm 45` | Bilinen en küçük uzun kenar (cm); ölçü aramasını atlar |
+| `--no-cut` | Kesim dosyalarını üretmez (hızlı deneme) |
+| `--simplify-mm 0.5` | İnce paralel çizgili tasarımlarda düğüm sayısını düşürür |
+| `--mockups` | 2D stüdyo yerleşim görselleri ve renk paneli de üretir (varsayılan kapalı; oda görselleri ChatGPT'de çok daha iyi çıkıyor) |
+| `--rooms ./rooms` | Boş oda fotoğraflarına yerleştirir (`--mockups`'ı açar; aşağıya bak) |
+
+Oda mockup'ları ve renk paneli ChatGPT'de, kesim dosyasının PNG'si yüklenerek üretilir; kit ölçek görsellerini (boyut rehberi, kolaj) üretir, çünkü görüntü modelleri ölçeği tutturamaz.
+
+**Boş oda fotoğrafları (isteğe bağlı):** `rooms/` klasörüne duvarı boş oda fotoğraflarını koy ve yanına bir
+`rooms.json` yaz. `box`, eserin sığacağı dikdörtgen (piksel: x, y, genişlik, yükseklik); `light`,
+ışığın geldiği taraf.
+
+```json
+[
+  {"file": "salon1.jpg", "box": [620, 300, 1400, 700], "light": "left"},
+  {"file": "yatak1.jpg", "box": [500, 250, 1200, 500], "light": "right"}
+]
 ```
 
 ## Sorun Giderme

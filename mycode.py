@@ -1706,6 +1706,7 @@ def vectorize(mask: np.ndarray, cfg: Config) -> Tuple[List[SubPath], Dict]:
     eps_px = cfg.px(cfg.simplify_mm)
     flatten_px = cfg.px(cfg.bezier_flatten_mm)
     best = None
+    prev_iou = None
 
     for attempt in range(4):
         subpaths, stats = _vectorize_once(mask, cfg, eps_px)
@@ -1716,7 +1717,15 @@ def vectorize(mask: np.ndarray, cfg: Config) -> Tuple[List[SubPath], Dict]:
         stats["simplify_epsilon_mm"] = round(eps_px * cfg.mm_per_px, 4)
         stats["simplify_retries"] = attempt
 
-        score = (ok, topo.get("iou", 0.0) - 0.01 * topo.get("self_intersections", 0))
+        iou = topo.get("iou", 0.0)
+        structural = topo.get("components_split") or topo.get("self_intersections", 0)
+        # IoU is compared in 0.002 steps so that a finer pass only wins on a
+        # real improvement; on a tie the pass with fewer nodes is kept. On
+        # dense thin-line art the IoU floor is set by rasterisation rounding
+        # along every edge, not by the fit, and without the tie-break each
+        # retry quadrupled the node count and the finest pass always won.
+        score = (ok, not structural, -topo.get("self_intersections", 0),
+                 int(iou * 500), -stats.get("nodes_final", 0))
         if best is None or score > best[0]:
             best = (score, subpaths, stats)
 
@@ -1725,6 +1734,9 @@ def vectorize(mask: np.ndarray, cfg: Config) -> Tuple[List[SubPath], Dict]:
         # the opposite of the point of this stage.
         if ok or not topo.get("retryable") or eps_px <= 0.25:
             break
+        if not structural and prev_iou is not None and iou - prev_iou < 0.002:
+            break  # a finer fit did not move the IoU: the fault is not the fit
+        prev_iou = iou
         eps_px *= 0.5
 
     return best[1], best[2]
