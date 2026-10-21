@@ -6,3 +6,7 @@ __pycache__/
 prompts/
 gece/
 gen_out/
+lora/
+lora_data/
+lora_train*/
+train_*.json

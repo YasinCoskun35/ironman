@@ -131,3 +131,18 @@ def test_tiny_islands_are_repaired_big_ones_rejected(tmp_path):
     moon = big.copy()
     cv2.circle(moon, (300, 200), 70, 255, -1)              # a whole moon: far over the limit
     assert bg.drop_islands(moon)[1] > bg.REPAIR_MAX_SHARE
+
+
+def test_lora_runs_use_z_image_with_trigger_and_unpack_zip(tmp_path):
+    import zipfile
+    p = bg.parse_pack(PACK)[1]
+    z = tmp_path / "0001000_checkpoint.zip"
+    with zipfile.ZipFile(z, "w") as f:
+        f.writestr("0001000_adapter.safetensors", b"x")
+        f.writestr("0001000_config.json", "{}")
+    lora = bg.resolve_lora(str(z), tmp_path / "_lora")
+    assert lora.endswith("_adapter.safetensors") and Path(lora).read_bytes() == b"x"
+    cmd = bg.mflux_cmd("mflux-generate-z-image-turbo", p, 3, tmp_path / "a.png", 9, 4, None, lora, 0.8)
+    assert cmd[cmd.index("--prompt") + 1].startswith("ifcsteel style, ")
+    assert cmd[cmd.index("--model") + 1] == bg.ZIMAGE_MODEL and "--quantize" not in cmd
+    assert cmd[cmd.index("--lora-paths") + 1] == lora and cmd[cmd.index("--lora-scales") + 1] == "0.8"

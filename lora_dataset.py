@@ -21,6 +21,7 @@ USAGE
     python lora_dataset.py -i ~/etsy -o lora_data
     python lora_dataset.py -i ~/etsy -o lora_data --trigger ifcsteel --size 768
     python lora_dataset.py -o lora_data --apply-captions      # after editing captions.csv
+    python lora_dataset.py -o lora_data --train-config        # write train_ifcsteel.json for mflux-train
 """
 
 from __future__ import annotations
@@ -167,6 +168,54 @@ def build(root: Path, out: Path, trigger: str, size: int, log=print) -> int:
     return 0
 
 
+# Previews mflux-train draws while it learns: subjects that are NOT in the set,
+# so they show whether the style carries over or the model only memorised.
+PREVIEWS = ["a lighthouse on rocks with crashing waves",
+            "a fox curled around a crescent moon with pine branches"]
+
+
+def write_train_config(out: Path, trigger: str, epochs: int = 15, size: Optional[int] = None) -> Path:
+    """
+    A LoRA config for mflux-train on a 16 GB Mac. mflux no longer trains FLUX.1,
+    so this targets Z-Image Turbo (Apache 2.0, not gated; batch_generate --lora
+    then generates with it). Memory: 4-bit base, disk-cached encodings
+    (low_ram) and gradient checkpointing; the resolution follows the dataset.
+    """
+    out = out.expanduser().resolve()
+    images = sorted(out.glob("[0-9][0-9][0-9][0-9].png"))
+    n = len(images)
+    if size is None:
+        size = min(Image.open(images[0]).width, 1024) if images else 768
+    for k, subject in enumerate(PREVIEWS, 1):
+        (out / f"preview_{k}.txt").write_text(
+            f"{trigger} style, {subject}, black laser-cut steel cut file, one connected piece", encoding="utf-8")
+    blocks = {"start": 0, "end": 30}
+    modules = ["attention.to_q", "attention.to_k", "attention.to_v", "attention.to_out.0",
+               "feed_forward.w1", "feed_forward.w2", "feed_forward.w3"]
+    conf = {
+        "model": "z-image-turbo",
+        "data": str(out),
+        "seed": 4,
+        "steps": 9,
+        "guidance": 0.0,
+        "quantize": 4,
+        "max_resolution": size,
+        "low_ram": True,
+        "gradient_checkpointing": True,
+        "training_loop": {"num_epochs": epochs, "batch_size": 1, "timestep_low": 4, "timestep_high": 9},
+        "optimizer": {"name": "AdamW", "learning_rate": 1e-4},
+        "checkpoint": {"save_frequency": 100, "output_path": str(out.parent / "lora_train")},
+        "monitoring": {"preview_width": size, "preview_height": size, "plot_frequency": 20,
+                       "generate_image_frequency": 100},
+        "lora_layers": {"targets": [{"module_path": f"layers.{{block}}.{m}", "blocks": blocks, "rank": 16}
+                                    for m in modules]},
+    }
+    dest = out.parent / f"train_{trigger}.json"
+    dest.write_text(json.dumps(conf, indent=2), encoding="utf-8")
+    print(f"{dest}  ({n} görsel × {epochs} tur = {n * epochs} adım, her 100 adımda checkpoint ve önizleme)")
+    return dest
+
+
 def apply_captions(out: Path) -> int:
     """Write captions.csv edits back to the .txt files; rows whose image was deleted are skipped."""
     n = 0
@@ -177,7 +226,7 @@ def apply_captions(out: Path) -> int:
                 img.with_suffix(".txt").write_text(r["caption"].strip(), encoding="utf-8")
                 n += 1
     for txt in out.glob("*.txt"):                            # captions of deleted images
-        if not txt.with_suffix(".png").exists():
+        if not txt.stem.startswith("preview") and not txt.with_suffix(".png").exists():
             txt.unlink()
     print(f"{n} açıklama güncellendi")
     return 0
@@ -190,9 +239,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--trigger", default="ifcsteel", help="trigger word that switches the style on")
     ap.add_argument("--size", type=int, default=1024, help="square image size (768 trains faster on 16 GB)")
     ap.add_argument("--apply-captions", action="store_true", help="copy edited captions.csv into the .txt files")
+    ap.add_argument("--train-config", action="store_true", help="write the mflux-train config next to the dataset")
+    ap.add_argument("--epochs", type=int, default=15, help="passes over the dataset for --train-config")
     a = ap.parse_args(argv)
-    if a.apply_captions:
-        return apply_captions(a.output)
+    if a.apply_captions or a.train_config:
+        if a.apply_captions:
+            apply_captions(a.output)
+        if a.train_config:
+            write_train_config(a.output, a.trigger, a.epochs)
+        return 0
     if not a.input:
         ap.error("-i/--input is required unless --apply-captions")
     return build(a.input.expanduser(), a.output, a.trigger, a.size)
