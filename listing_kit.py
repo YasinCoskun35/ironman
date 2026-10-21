@@ -327,16 +327,27 @@ def min_long_side_cm(src: Path, cfg: cnc.Config, ink_ar: float, jobs: int) -> Tu
     return max(w, h) / 10.0, info
 
 
-def cut_sizes(src: Path, out: Path, sizes: List[Size], fw: float, overrides: Dict) -> List[Dict]:
-    """Run mycode.py once per size; canvas width is chosen so the *ink* lands on the quoted width."""
+def cut_sizes(src: Path, out: Path, sizes: List[Size], fw: float, overrides: Dict, sku: str) -> List[Dict]:
+    """
+    Run mycode.py once per size; canvas width is chosen so the *ink* lands on the quoted width.
+
+    Files are renamed SKU_size_WxHcm: every size of a design otherwise leaves as
+    the same "design.dxf", and the one sent to the cutter is picked by folder.
+    """
     reports = []
     for s in sizes:
         canvas_mm = s.width_cm * 10.0 / fw
         cfg = cut_config(canvas_mm, overrides)
-        d = out / f"{s.name}_{s.width_cm}x{s.height_cm}cm"
+        tag = f"{s.name}_{s.width_cm}x{s.height_cm}cm"
+        d = out / tag
         rep = cnc.process_file(src, d, cfg)
+        outputs = []
+        for p in map(Path, rep["outputs"]):
+            target = p.with_name(f"{sku}_{tag}{p.name[len(src.stem):]}")
+            p.replace(target)
+            outputs.append(str(target))
         reports.append({"size": s.name, "status": rep["status"], "warnings": rep["warnings"],
-                        "errors": rep["errors"], "outputs": rep["outputs"]})
+                        "errors": rep["errors"], "outputs": outputs})
     return reports
 
 
@@ -720,7 +731,7 @@ def build_kit(src: Path, out_root: Path, name: str, product: str = "wall", theme
 
     if do_cut:
         log("[kit] kesim dosyaları üretiliyor...")
-        kit["cut"] = cut_sizes(src, kit_dir / "cut", sizes, fw, overrides)
+        kit["cut"] = cut_sizes(src, kit_dir / "cut", sizes, fw, overrides, kit["sku"])
 
     art = design_mask(src, ref)
     hero = sizes[len(sizes) // 2]
