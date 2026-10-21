@@ -99,12 +99,46 @@ def localize(text: str) -> str:
     return " ".join(lines)
 
 
+ZIMAGE_MODEL = "filipstrand/Z-Image-Turbo-mflux-4bit"
+TRIGGER = "ifcsteel"
+
+
+def resolve_lora(path: str, dest: Path) -> str:
+    """
+    A LoRA as mflux-train leaves it is a checkpoint zip with the adapter inside
+    (NNNNNNN_adapter.safetensors); unpack that once so the zip can be used as is.
+    """
+    if not path.lower().endswith(".zip"):
+        return path
+    import zipfile
+    with zipfile.ZipFile(path) as z:
+        name = next((n for n in z.namelist() if n.endswith("_adapter.safetensors")), None)
+        if name is None:
+            raise ValueError(f"{path}: no *_adapter.safetensors inside")
+        target = dest / f"{Path(path).stem}_{Path(name).name}"
+        if not target.exists():
+            dest.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(z.read(name))
+    return str(target)
+
+
 def mflux_cmd(exe: str, p: Prompt, seed: int, out: Path, steps: int, quantize: int,
-              model_path: Optional[str]) -> List[str]:
+              model_path: Optional[str], lora: Optional[str] = None, lora_scale: float = 1.0) -> List[str]:
     w, h = RATIO_PX[p.ratio]
-    cmd = [exe, "--prompt", localize(p.text), "--steps", str(steps), "--seed", str(seed),
+    prompt = localize(p.text)
+    if lora:
+        # Our style LoRA is trained on Z-Image Turbo (mflux no longer trains
+        # FLUX.1), so a LoRA run uses that model; the trigger word switches it on.
+        prompt = f"{TRIGGER} style, {prompt}"
+    cmd = [exe, "--prompt", prompt, "--steps", str(steps), "--seed", str(seed),
            "--width", str(w), "--height", str(h), "--output", str(out)]
-    if model_path:
+    if lora:
+        if model_path:
+            cmd += ["--model", model_path, "--base-model", "z-image-turbo"]
+        else:
+            cmd += ["--model", ZIMAGE_MODEL]
+        cmd += ["--lora-paths", lora, "--lora-scales", str(lora_scale)]
+    elif model_path:
         # Current mflux takes a saved model as --model <dir> plus its family;
         # the older --path flag is gone.
         cmd += ["--model", model_path, "--base-model", "schnell"]
@@ -248,7 +282,8 @@ def pick_jobs(packs: Sequence[Path], only: Optional[set], count: Optional[int], 
 
 def run(packs: Sequence[Path], out: Path, only: Optional[set], variants: int, seed0: int, steps: int,
         quantize: int, exe: str, model_path: Optional[str], dry_run: bool, check: bool,
-        count: Optional[int] = None, nightly: bool = False) -> int:
+        count: Optional[int] = None, nightly: bool = False, lora: Optional[str] = None,
+        lora_scale: float = 1.0) -> int:
     import datetime as dt
     import random
     history = out / "history.csv"
@@ -264,6 +299,8 @@ def run(packs: Sequence[Path], out: Path, only: Optional[set], variants: int, se
     raw, keep, reject = out / "raw", out / "keep", out / "reject"
     for d in (raw, keep, reject):
         d.mkdir(parents=True, exist_ok=True)
+    if lora:
+        lora = resolve_lora(lora, history.parent / "_lora")
     print(f"[gece] {len(jobs)} prompt × {variants} varyant = {len(jobs) * variants} görsel -> {out}", flush=True)
 
     rng = random.Random()
@@ -273,7 +310,7 @@ def run(packs: Sequence[Path], out: Path, only: Optional[set], variants: int, se
         for v in range(variants):
             seed = seed0 + v if count is None else rng.randint(1, 2 ** 31 - 1)
             img = raw / f"{slugify(j.pack)[:18]}_{p.number:02d}_{slugify(p.name)}_s{seed}.png"
-            cmd = mflux_cmd(exe, p, seed, img, steps, quantize, model_path)
+            cmd = mflux_cmd(exe, p, seed, img, steps, quantize, model_path, lora, lora_scale)
             if dry_run:
                 print(" ".join(shlex.quote(c) for c in cmd))
                 continue
@@ -349,16 +386,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--nightly", action="store_true", help="write into <output>/<today>/ (use with --count)")
     ap.add_argument("--variants", type=int, default=3, help="images per prompt (different seeds)")
     ap.add_argument("--seed", type=int, default=1, help="first seed")
-    ap.add_argument("--steps", type=int, default=4, help="schnell is built for 2-4 steps")
+    ap.add_argument("--steps", type=int, default=None, help="default 4 for schnell, 9 for Z-Image Turbo (--lora)")
     ap.add_argument("--quantize", type=int, choices=[4, 8], default=4, help="4 for 16 GB Macs, 8 for 32 GB+")
-    ap.add_argument("--mflux", default="mflux-generate", help="path to mflux-generate")
+    ap.add_argument("--mflux", default=None,
+                    help="path to mflux-generate (or mflux-generate-z-image-turbo with --lora)")
     ap.add_argument("--model-path", default=None, help="a model saved with mflux-save (loads much faster)")
+    ap.add_argument("--lora", default=None,
+                    help="our style LoRA (.safetensors or the checkpoint .zip from mflux-train); uses Z-Image Turbo")
+    ap.add_argument("--lora-scale", type=float, default=1.0, help="LoRA strength (0.6-1.0)")
     ap.add_argument("--no-check", action="store_true", help="skip the one-piece check")
     ap.add_argument("--dry-run", action="store_true", help="print the commands, generate nothing")
     a = ap.parse_args(argv)
     only = {int(x) for x in a.only.split(",") if x.strip()} or None
-    return run(a.pack, a.output, only, a.variants, a.seed, a.steps, a.quantize, a.mflux,
-               a.model_path, a.dry_run, not a.no_check, a.count, a.nightly)
+    steps = a.steps or (9 if a.lora else 4)
+    exe = a.mflux or ("mflux-generate-z-image-turbo" if a.lora else "mflux-generate")
+    return run(a.pack, a.output, only, a.variants, a.seed, steps, a.quantize, exe,
+               a.model_path, a.dry_run, not a.no_check, a.count, a.nightly, a.lora, a.lora_scale)
 
 
 if __name__ == "__main__":

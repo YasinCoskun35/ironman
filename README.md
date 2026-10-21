@@ -303,6 +303,24 @@ yanına bıraktığı `cnc_prep_report.json` ve kendi SVG damgası üzerinden bu
 .venv/bin/python3 lora_dataset.py -o lora_data --apply-captions
 ```
 
+### Eğitim (ücretsiz, Mac'te, mflux-train)
+
+mflux artık FLUX.1'i eğitmiyor; LoRA **Z-Image Turbo** üzerinde eğitilir (Apache 2.0, lisans onayı
+gerekmez). Eğitilen LoRA ile üretim de Z-Image Turbo ile yapılır.
+
+```bash
+.venv/bin/python3 lora_dataset.py -o lora_data --train-config
+~/mflux-env/bin/mflux-train --config train_ifcsteel.json
+```
+
+- Ayar dosyası 16 GB Mac'e göre: 4-bit model, `low_ram`, `gradient_checkpointing`, veri setinin çözünürlüğü.
+- Her 100 adımda `lora_train/checkpoints/` altına bir checkpoint zip'i, `lora_train/preview/` altına
+  veri setinde olmayan iki konunun (deniz feneri, tilki) önizlemesi düşer. Önizlemeler siyah-beyaz
+  kesim dosyası gibi görünmeye başladığında o checkpoint iyidir.
+- Yarıda kalırsa: `mflux-train --resume lora_train/checkpoints/<son>_checkpoint.zip`
+- Seçtiğin checkpoint'i `lora/ifcsteel.zip` olarak kopyala; `gece.command` onu görünce LoRA ile üretir.
+  Elle: `batch_generate.py ... --lora lora/ifcsteel.zip --lora-scale 0.8`
+
 ## Sorun Giderme
 
 Karşılaşman muhtemel şeyler, sırayla ne yapacağın:
