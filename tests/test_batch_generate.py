@@ -167,3 +167,15 @@ def test_smoothing_keeps_parts_and_size_gate_rejects_hairlines(tmp_path):
                  (600 + int(200 * np.cos(t)), 350 + int(200 * np.sin(t))), 255, 1)
     assert bg.min_size_cm(bg.thinnest_pct(bold)) < bg.MAX_MIN_CM
     assert bg.min_size_cm(bg.thinnest_pct(spokes)) > bg.MAX_MIN_CM
+
+
+def test_recheck_rebuilds_a_finished_night(tmp_path):
+    pack = tmp_path / "pack.md"
+    pack.write_text(PACK, encoding="utf-8")
+    out = tmp_path / "o"
+    bg.run([pack], out, None, 2, 1, 4, 4, _fake_mflux(tmp_path), None, False, True)   # seeds 1, 2
+    before = sorted(x.name for x in (out / "keep").iterdir())
+    (out / "keep" / before[0]).unlink()
+    assert bg.main(["--recheck", str(out)]) == 0
+    assert sorted(x.name for x in (out / "keep").iterdir()) == before
+    assert (out / "recheck.csv").exists() and (out / "sheet.jpg").exists()
