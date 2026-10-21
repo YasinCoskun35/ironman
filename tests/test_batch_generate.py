@@ -119,3 +119,15 @@ def test_kept_files_are_pure_black_and_white(tmp_path):
     assert len(kept) == 1 and (out / "sheet.jpg").exists()
     vals = set(np.unique(cv2.imread(str(kept[0]), cv2.IMREAD_GRAYSCALE)).tolist())
     assert vals <= {0, 255}
+
+
+def test_tiny_islands_are_repaired_big_ones_rejected(tmp_path):
+    big = np.zeros((400, 600), np.uint8)
+    cv2.rectangle(big, (50, 50), (550, 350), 255, 30)
+    tiny = big.copy()
+    cv2.circle(tiny, (300, 200), 6, 255, -1)              # a stray dot: ~0.3% of the metal
+    body, share = bg.drop_islands(tiny)
+    assert share < bg.REPAIR_MAX_SHARE and cv2.connectedComponents(body)[0] - 1 == 1
+    moon = big.copy()
+    cv2.circle(moon, (300, 200), 70, 255, -1)              # a whole moon: far over the limit
+    assert bg.drop_islands(moon)[1] > bg.REPAIR_MAX_SHARE
