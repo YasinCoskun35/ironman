@@ -168,10 +168,10 @@ def build(root: Path, out: Path, trigger: str, size: int, log=print) -> int:
     return 0
 
 
-# Previews mflux-train draws while it learns: subjects that are NOT in the set,
-# so they show whether the style carries over or the model only memorised.
-PREVIEWS = ["a lighthouse on rocks with crashing waves",
-            "a fox curled around a crescent moon with pine branches"]
+# The preview mflux-train draws while it learns: a subject NOT in the set, so it
+# shows whether the style carries over or the model only memorised. One only:
+# on a 16 GB Mac each preview costs minutes.
+PREVIEWS = ["a lighthouse on rocks with crashing waves"]
 
 
 def write_train_config(out: Path, trigger: str, epochs: int = 15, size: Optional[int] = None) -> Path:
@@ -186,6 +186,8 @@ def write_train_config(out: Path, trigger: str, epochs: int = 15, size: Optional
     n = len(images)
     if size is None:
         size = min(Image.open(images[0]).width, 1024) if images else 768
+    for old in out.glob("preview*.txt"):
+        old.unlink()
     for k, subject in enumerate(PREVIEWS, 1):
         (out / f"preview_{k}.txt").write_text(
             f"{trigger} style, {subject}, black laser-cut steel cut file, one connected piece", encoding="utf-8")
@@ -206,13 +208,14 @@ def write_train_config(out: Path, trigger: str, epochs: int = 15, size: Optional
         "optimizer": {"name": "AdamW", "learning_rate": 1e-4},
         "checkpoint": {"save_frequency": 100, "output_path": str(out.parent / "lora_train")},
         "monitoring": {"preview_width": size, "preview_height": size, "plot_frequency": 20,
-                       "generate_image_frequency": 100},
+                       "generate_image_frequency": 200},
         "lora_layers": {"targets": [{"module_path": f"layers.{{block}}.{m}", "blocks": blocks, "rank": 16}
                                     for m in modules]},
     }
     dest = out.parent / f"train_{trigger}.json"
     dest.write_text(json.dumps(conf, indent=2), encoding="utf-8")
-    print(f"{dest}  ({n} görsel × {epochs} tur = {n * epochs} adım, her 100 adımda checkpoint ve önizleme)")
+    print(f"{dest}  ({n} görsel × {epochs} tur = {n * epochs} adım, {size} px, "
+          f"her 100 adımda checkpoint, her 200 adımda önizleme)")
     return dest
 
 
@@ -241,12 +244,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--apply-captions", action="store_true", help="copy edited captions.csv into the .txt files")
     ap.add_argument("--train-config", action="store_true", help="write the mflux-train config next to the dataset")
     ap.add_argument("--epochs", type=int, default=15, help="passes over the dataset for --train-config")
+    ap.add_argument("--train-size", type=int, default=None,
+                    help="training resolution for --train-config (default: the dataset's; 512 is ~2x faster)")
     a = ap.parse_args(argv)
     if a.apply_captions or a.train_config:
         if a.apply_captions:
             apply_captions(a.output)
         if a.train_config:
-            write_train_config(a.output, a.trigger, a.epochs)
+            write_train_config(a.output, a.trigger, a.epochs, a.train_size)
         return 0
     if not a.input:
         ap.error("-i/--input is required unless --apply-captions")
