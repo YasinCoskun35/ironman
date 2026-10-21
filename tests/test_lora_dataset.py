@@ -88,5 +88,7 @@ def test_train_config_targets_z_image_and_keeps_previews(tmp_path):
     assert conf["data"] == str(out.resolve()) and conf["training_loop"]["num_epochs"] == 3
     assert conf["lora_layers"]["targets"][0]["module_path"] == "layers.{block}.attention.to_q"
     assert (out / "preview_1.txt").read_text(encoding="utf-8").startswith("ifcsteel style, a lighthouse")
+    assert ld.write_train_config(out, "ifcsteel", size=512) and not (out / "preview_2.txt").exists()
+    assert json.loads((tmp_path / "train_ifcsteel.json").read_text(encoding="utf-8"))["max_resolution"] == 512
     ld.apply_captions(out)                                    # preview prompts have no image: must survive
     assert (out / "preview_1.txt").exists()

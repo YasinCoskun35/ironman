@@ -314,9 +314,10 @@ gerekmez). Eğitilen LoRA ile üretim de Z-Image Turbo ile yapılır.
 ```
 
 - Ayar dosyası 16 GB Mac'e göre: 4-bit model, `low_ram`, `gradient_checkpointing`, veri setinin çözünürlüğü.
-- Her 100 adımda `lora_train/checkpoints/` altına bir checkpoint zip'i, `lora_train/preview/` altına
-  veri setinde olmayan iki konunun (deniz feneri, tilki) önizlemesi düşer. Önizlemeler siyah-beyaz
-  kesim dosyası gibi görünmeye başladığında o checkpoint iyidir.
+- Her 100 adımda `lora_train/checkpoints/` altına bir checkpoint zip'i, her 200 adımda
+  `lora_train/preview/` altına veri setinde olmayan bir konunun (deniz feneri) önizlemesi düşer.
+  Önizleme siyah-beyaz kesim dosyası gibi görünmeye başladığında o checkpoint iyidir.
+- Yavaşsa (adım başına dakikalar): `--train-size 512 --epochs 10` ile ayar dosyasını yeniden yaz.
 - Yarıda kalırsa: `mflux-train --resume lora_train/checkpoints/<son>_checkpoint.zip`
 - Seçtiğin checkpoint'i `lora/ifcsteel.zip` olarak kopyala; `gece.command` onu görünce LoRA ile üretir.
   Elle: `batch_generate.py ... --lora lora/ifcsteel.zip --lora-scale 0.8`
