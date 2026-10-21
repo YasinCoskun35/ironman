@@ -41,6 +41,7 @@ from dataclasses import asdict, dataclass, replace as dataclass_replace
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
@@ -391,6 +392,95 @@ def finish(alpha: Image.Image, color: str) -> Image.Image:
     return out
 
 
+def _shift_blur(a: np.ndarray, dx: float, dy: float, sigma: float) -> np.ndarray:
+    """Sub-pixel shift then Gaussian blur, for shadows and the steel's side face."""
+    m = np.float32([[1, 0, dx], [0, 1, dy]])
+    out = cv2.warpAffine(a, m, (a.shape[1], a.shape[0]), flags=cv2.INTER_LINEAR, borderValue=0)
+    if sigma > 0.3:
+        out = cv2.GaussianBlur(out, (0, 0), sigma)
+    return out
+
+
+def place_part(img: Image.Image, alpha: Image.Image, color: str, x: int, y: int,
+               px_per_mm: float, light: str = "left") -> Image.Image:
+    """
+    Composite the cut part onto a wall so it reads as a 2 mm steel plate
+    standing 15 mm off the wall, not as a sticker.
+
+    What a photo of the real part shows, and how each is reproduced in 2D:
+      * shadow: two layers, a tight dark contact shadow close to the edge and a
+        wide soft one further out, both cast away from the light and offset by
+        the real 15 mm stand-off at this scale; multiplied into the wall so the
+        wall's own texture shows through.
+      * thickness: the plate's side face, a darker copy shifted 2 mm away from
+        the light, visible only where it peeks out from under the front face.
+      * edges: a bevel from the blurred silhouette's gradient; edges facing the
+        light catch a highlight, the others fall off. Stronger on metallics.
+      * light: a broad falloff across the face from the lit side, the room's
+        own brightness under the part, and a slight tint toward the room's
+        colour so the finish sits in the same light as the wall.
+      * coat: fine grain on every finish, coarse mottling on hammertones.
+    """
+    W, H = img.size
+    a = np.asarray(alpha, np.float32) / 255.0
+    h, w = a.shape
+    standoff = max(3.0, 15.0 * px_per_mm)
+    thick = max(1.0, 2.0 * px_per_mm)
+    sdir = 1.0 if light == "left" else -1.0          # shadow falls away from the light
+    lx, ly = (-0.75, -0.65) if light == "left" else (0.75, -0.65)   # light comes from upper-left/right
+
+    m = int(standoff * 3) + 6
+    x0, y0, x1, y1 = max(0, x - m), max(0, y - m), min(W, x + w + m), min(H, y + h + m)
+    A = np.zeros((y1 - y0, x1 - x0), np.float32)
+    ax0, ay0 = x - x0, y - y0
+    sx0, sy0 = max(0, -ax0), max(0, -ay0)
+    A[max(0, ay0):ay0 + h, max(0, ax0):ax0 + w] = a[sy0:sy0 + (y1 - y0) - max(0, ay0), sx0:sx0 + (x1 - x0) - max(0, ax0)]
+    base = np.asarray(img, np.float32)
+    region = base[y0:y1, x0:x1].copy()
+    wall_l = float(region.mean())
+
+    # shadows, multiplied into the wall
+    contact = _shift_blur(A, sdir * standoff * 0.25, standoff * 0.35, standoff * 0.22)
+    ambient = _shift_blur(A, sdir * standoff * 0.8, standoff * 1.1, standoff * 0.9)
+    k = 0.62 if wall_l > 110 else 0.5
+    occ = np.clip(0.6 * contact + 0.35 * ambient, 0, 1) * k
+    region *= (1.0 - occ)[..., None]
+
+    # finish colour, lit
+    rgb = np.array(COLOR_RGB.get(color, (24, 24, 26)), np.float32)
+    yy, xx = np.mgrid[0:A.shape[0], 0:A.shape[1]].astype(np.float32)
+    u = (xx - ax0) / max(w, 1)
+    v = (yy - ay0) / max(h, 1)
+    along = (u if light == "left" else 1 - u) * 0.65 + v * 0.35         # 0 at the lit corner
+    metal = color in METALLIC
+    sheen = 1.06 - (0.2 if metal else 0.06) * along
+    if metal:
+        sheen *= 0.9 + 0.22 * np.sin(along * math.pi * 1.6 + 0.4) ** 2
+    soft = cv2.GaussianBlur(A, (0, 0), max(0.8, 0.7 * px_per_mm))
+    gx = cv2.Sobel(soft, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(soft, cv2.CV_32F, 0, 1, ksize=3)
+    facing = -(gx * lx + gy * ly)
+    facing /= max(float(np.abs(facing).max()), 1e-6)
+    bevel = 1.0 + (0.45 if metal else 0.22) * facing
+    rng = np.random.default_rng(11)
+    grain = 1.0 + rng.normal(0, 0.06 if ("Hammer" in color or color == "Texture Black") else 0.015, A.shape)
+    wall_mean = region.reshape(-1, 3).mean(0) + 1.0
+    tint = (wall_mean / wall_mean.mean()) ** 0.18
+    lum = cv2.GaussianBlur(region.mean(axis=2), (0, 0), max(8.0, w / 12.0))
+    gain = np.clip((lum / max(float(lum.mean()), 1.0)) ** 0.5, 0.8, 1.2)
+    face = rgb[None, None, :] * (sheen * bevel * grain * gain)[..., None] * tint[None, None, :]
+    side = rgb[None, None, :] * 0.42 * gain[..., None] * tint[None, None, :]
+
+    # side face of the 2 mm plate, then the front face with a photographed (slightly soft) edge
+    side_a = np.clip(_shift_blur(A, sdir * thick, thick * 0.8, 0.4) - A, 0, 1)[..., None]
+    region = region * (1 - side_a) + side * side_a
+    face_a = cv2.GaussianBlur(A, (0, 0), 0.5)[..., None]
+    region = region * (1 - face_a) + face * face_a
+
+    base[y0:y1, x0:x1] = np.clip(region, 0, 255)
+    return Image.fromarray(base.astype(np.uint8))
+
+
 def wall_for(color: str, k: int) -> Tuple[int, int, int]:
     dark = color in METALLIC or color in {"White", "Beige", "Light Pink"}
     pool = WALLS["dark" if dark else "light"]
@@ -441,13 +531,7 @@ def studio_scene(art: Image.Image, color: str, k: int, size_cm: Tuple[int, int],
     h = int(w * art.height / art.width)
     alpha = art.resize((w, h), Image.LANCZOS)
     x, y = cx - w // 2, max(int(canvas * 0.05), top - int(25 * px_per_cm) - h)
-    shadow = Image.new("L", img.size, 0)
-    shadow.paste(alpha, (x + int(1.6 * px_per_cm), y + int(2.2 * px_per_cm)))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(max(2, int(1.4 * px_per_cm))))
-    dark = Image.new("RGB", img.size, tuple(int(c * 0.55) for c in wall))
-    img.paste(dark, (0, 0), shadow.point(lambda v: int(v * 0.75)))
-    img.paste(finish(alpha, color), (x, y), finish(alpha, color))
-    return img
+    return place_part(img, alpha, color, x, y, px_per_cm / 10.0, "left")
 
 
 ROOM_EXT = {".jpg", ".jpeg", ".png", ".webp"}
@@ -489,7 +573,7 @@ def pick_room_color(colors: Sequence[str], wall_l: float, k: int) -> str:
 
 
 def room_scene(art: Image.Image, colors: Sequence[str], room: Dict, rooms_dir: Path,
-               k: int = 0) -> Tuple[Image.Image, str]:
+               k: int = 0, width_cm: float = 120.0) -> Tuple[Image.Image, str]:
     """
     Composite the cut geometry onto an AI-made empty-room photo.
 
@@ -513,28 +597,9 @@ def room_scene(art: Image.Image, colors: Sequence[str], room: Dict, rooms_dir: P
 
     s = min(bw / art.width, bh / art.height)
     w, h = int(art.width * s), int(art.height * s)
-    alpha = art.resize((w, h), Image.LANCZOS).filter(ImageFilter.GaussianBlur(0.6))
+    alpha = art.resize((w, h), Image.LANCZOS)
     x, y = bx + (bw - w) // 2, by + (bh - h) // 2
-
-    # shadow: offset away from the light, softer and lighter on dark walls
-    dx = 1 if light == "left" else -1
-    off = max(4, int(0.012 * max(w, h)))
-    shadow = Image.new("L", img.size, 0)
-    shadow.paste(alpha, (x + dx * off, y + int(off * 1.3)))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(off * 0.9))
-    strength = 0.55 if wall_l >= 110 else 0.35
-    img.paste(Image.new("RGB", img.size, (12, 10, 8)), (0, 0), shadow.point(lambda v: int(v * strength)))
-
-    # relight: the room's luminance under the part, smoothed, scales the finish
-    under = np.asarray(img.convert("L").crop((x, y, x + w, y + h)).filter(ImageFilter.GaussianBlur(max(8, w // 12))),
-                       np.float32)
-    gain = np.clip((under / max(under.mean(), 1.0)) ** 0.6, 0.75, 1.25)[..., None]
-    painted = finish(alpha, color)
-    rgba = np.asarray(painted, np.float32)
-    rgba[..., :3] = np.clip(rgba[..., :3] * gain, 0, 255)
-    painted = Image.fromarray(rgba.astype(np.uint8), "RGBA")
-    img.paste(painted, (x, y), painted)
-    return img, color
+    return place_part(img, alpha, color, x, y, w / (width_cm * 10.0), light), color
 
 
 def swatch_panel(art: Image.Image, colors: Sequence[str], canvas: Tuple[int, int] = (3000, 2000)) -> Image.Image:
@@ -804,7 +869,7 @@ def build_kit(src: Path, out_root: Path, name: str, product: str = "wall", theme
             kit_dir / "mockups" / f"A_{k + 1}_{slugify(c)}.jpg", quality=92)
     if rooms and rooms.is_dir():
         for k, room in enumerate(load_rooms(rooms)):
-            scene, c = room_scene(art, colors, room, rooms, k)
+            scene, c = room_scene(art, colors, room, rooms, k, hero.width_cm)
             scene.save(kit_dir / "mockups" / f"R_{k + 1}_{slugify(c)}.jpg", quality=92)
     swatch_panel(art, colors).save(kit_dir / "mockups" / "J_colors.jpg", quality=92)
     size_guide(art, sizes).save(kit_dir / "size_guide.jpg", quality=92)
