@@ -15,6 +15,7 @@ macOS ve Windows'ta aynı şekilde çalışır.
 - [Komut Satırı (CLI)](#komut-satırı-cli)
 - [Listing Kiti](#listing-kiti)
 - [Yerel AI ile toplu üretim (mflux)](#yerel-ai-ile-toplu-üretim-mflux)
+- [LoRA veri seti](#lora-veri-seti-kendi-tarzımızı-öğretmek)
 - [Sorun Giderme](#sorun-giderme)
 
 ## Ne İşe Yarar
@@ -281,6 +282,26 @@ Görsel sayısı için `COUNT=80 ./gece.command`. mflux ya da model başka bir y
 FLUX.1 schnell promptun en fazla ~256 token'ını okur. Standart formattaki uzun Technical bloğu bu
 yüzden yerelde aynı kuralları taşıyan kısa bir sürümle değiştirilir; tasarım tarifi ve Style satırı
 olduğu gibi kalır.
+
+## LoRA veri seti (kendi tarzımızı öğretmek)
+
+`lora_dataset.py`, daha önce Cut-Ready'den geçirdiğin tasarımları (ör. `~/etsy` altındaki listing
+klasörleri) tarar ve LoRA eğitimi için veri seti hazırlar. Klasör düzeni önemli değil: Cut-Ready'nin
+yanına bıraktığı `cnc_prep_report.json` ve kendi SVG damgası üzerinden bulur.
+
+```bash
+.venv/bin/python3 lora_dataset.py -i ~/etsy -o lora_data --size 768
+```
+
+- Her tasarımdan tek kopya alır; farklı bedenler ve yeniden adlandırılmış kopyalar ayıklanır.
+- `lora_data/0001.png`: kare, saf siyah-beyaz, ortalanmış. Yanındaki `0001.txt`, `ifcsteel style, ...`
+  ile başlayan açıklama.
+- `dataset_sheet.jpg`: hepsi numaralı. Zayıf olanların `.png`'sini sil.
+- `captions.csv`: açıklamaları burada düzelt, sonra `--apply-captions` ile `.txt` dosyalarına yaz:
+
+```bash
+.venv/bin/python3 lora_dataset.py -o lora_data --apply-captions
+```
 
 ## Sorun Giderme
 
