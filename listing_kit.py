@@ -450,27 +450,91 @@ def studio_scene(art: Image.Image, color: str, k: int, size_cm: Tuple[int, int],
     return img
 
 
-def room_scene(art: Image.Image, color: str, room: Dict, rooms_dir: Path) -> Image.Image:
+ROOM_EXT = {".jpg", ".jpeg", ".png", ".webp"}
+# Where the empty wall sits in a room generated with rooms_prompts (fractions of the image).
+DEFAULT_BOX = (0.2, 0.12, 0.6, 0.42)
+LIGHT_FINISHES = {"White", "Beige", "Light Pink"}
+
+
+def load_rooms(rooms_dir: Path) -> List[Dict]:
     """
-    Composite onto a real empty-room photo. rooms.json entries look like
-    {"file": "living1.jpg", "box": [x, y, w, h], "light": "left"}; the art is
-    fitted inside box, centred, with a shadow cast away from the light.
+    Rooms from rooms.json when present, otherwise every image in the folder
+    with the default wall box. Dropping AI-made empty rooms into the folder is
+    then all it takes; rooms.json is only needed to fine-tune a placement.
+    """
+    cfg = rooms_dir / "rooms.json"
+    if cfg.exists():
+        return json.loads(cfg.read_text(encoding="utf-8"))
+    return [{"file": p.name} for p in sorted(rooms_dir.iterdir()) if p.suffix.lower() in ROOM_EXT]
+
+
+def wall_luminance(img: Image.Image, box: Tuple[int, int, int, int]) -> Tuple[float, float, float]:
+    """Mean luminance of the wall box, and of its left and right halves (to find the light)."""
+    x, y, w, h = box
+    g = np.asarray(img.convert("L").crop((x, y, x + w, y + h)), np.float32)
+    return float(g.mean()), float(g[:, : w // 2].mean()), float(g[:, w // 2:].mean())
+
+
+def pick_room_color(colors: Sequence[str], wall_l: float, k: int) -> str:
+    """
+    v6 contrast rule applied to the actual wall: dark walls get metallic or light
+    finishes, light walls get the dark ones. Cycles through the kit's colours so
+    the rooms do not all show the same finish.
+    """
+    if wall_l < 110:
+        pool = [c for c in colors if c in METALLIC or c in LIGHT_FINISHES] or ["Gold"]
+    else:
+        pool = [c for c in colors if c not in METALLIC and c not in LIGHT_FINISHES] or ["Matte Black"]
+    return pool[k % len(pool)]
+
+
+def room_scene(art: Image.Image, colors: Sequence[str], room: Dict, rooms_dir: Path,
+               k: int = 0) -> Tuple[Image.Image, str]:
+    """
+    Composite the cut geometry onto an AI-made empty-room photo.
+
+    The room supplies the photographic quality; the geometry stays the cut file,
+    which a fully generated mockup cannot promise. Three things keep the paste
+    from looking pasted: the part picks up the room's own light falloff across
+    the wall, its edge is softened by a fraction of a pixel like a photographed
+    edge, and the shadow falls away from the brighter side of the wall.
+
+    rooms.json entries (all optional except file):
+        {"file": "salon1.jpg", "box": [x, y, w, h], "light": "left", "color": "Gold"}
     """
     img = Image.open(rooms_dir / room["file"]).convert("RGB")
-    bx, by, bw, bh = room["box"]
+    W, H = img.size
+    box = room.get("box") or [int(W * DEFAULT_BOX[0]), int(H * DEFAULT_BOX[1]),
+                              int(W * DEFAULT_BOX[2]), int(H * DEFAULT_BOX[3])]
+    bx, by, bw, bh = box
+    wall_l, left_l, right_l = wall_luminance(img, box)
+    color = room.get("color") or pick_room_color(colors, wall_l, k)
+    light = room.get("light") or ("left" if left_l >= right_l else "right")
+
     s = min(bw / art.width, bh / art.height)
     w, h = int(art.width * s), int(art.height * s)
-    alpha = art.resize((w, h), Image.LANCZOS)
+    alpha = art.resize((w, h), Image.LANCZOS).filter(ImageFilter.GaussianBlur(0.6))
     x, y = bx + (bw - w) // 2, by + (bh - h) // 2
-    dx = -1 if room.get("light", "left") == "right" else 1
-    off = max(4, int(0.012 * w))
+
+    # shadow: offset away from the light, softer and lighter on dark walls
+    dx = 1 if light == "left" else -1
+    off = max(4, int(0.012 * max(w, h)))
     shadow = Image.new("L", img.size, 0)
-    shadow.paste(alpha, (x + dx * off, y + int(off * 1.4)))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(off))
-    img.paste(Image.new("RGB", img.size, (20, 18, 16)), (0, 0), shadow.point(lambda v: int(v * 0.45)))
+    shadow.paste(alpha, (x + dx * off, y + int(off * 1.3)))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(off * 0.9))
+    strength = 0.55 if wall_l >= 110 else 0.35
+    img.paste(Image.new("RGB", img.size, (12, 10, 8)), (0, 0), shadow.point(lambda v: int(v * strength)))
+
+    # relight: the room's luminance under the part, smoothed, scales the finish
+    under = np.asarray(img.convert("L").crop((x, y, x + w, y + h)).filter(ImageFilter.GaussianBlur(max(8, w // 12))),
+                       np.float32)
+    gain = np.clip((under / max(under.mean(), 1.0)) ** 0.6, 0.75, 1.25)[..., None]
     painted = finish(alpha, color)
+    rgba = np.asarray(painted, np.float32)
+    rgba[..., :3] = np.clip(rgba[..., :3] * gain, 0, 255)
+    painted = Image.fromarray(rgba.astype(np.uint8), "RGBA")
     img.paste(painted, (x, y), painted)
-    return img
+    return img, color
 
 
 def swatch_panel(art: Image.Image, colors: Sequence[str], canvas: Tuple[int, int] = (3000, 2000)) -> Image.Image:
@@ -738,11 +802,10 @@ def build_kit(src: Path, out_root: Path, name: str, product: str = "wall", theme
     for k, c in enumerate(colors):
         studio_scene(art, c, k, (hero.width_cm, hero.height_cm)).save(
             kit_dir / "mockups" / f"A_{k + 1}_{slugify(c)}.jpg", quality=92)
-    if rooms and (rooms / "rooms.json").exists():
-        for k, room in enumerate(json.loads((rooms / "rooms.json").read_text(encoding="utf-8"))):
-            c = colors[k % len(colors)]
-            room_scene(art, c, room, rooms).save(
-                kit_dir / "mockups" / f"R_{k + 1}_{slugify(c)}.jpg", quality=92)
+    if rooms and rooms.is_dir():
+        for k, room in enumerate(load_rooms(rooms)):
+            scene, c = room_scene(art, colors, room, rooms, k)
+            scene.save(kit_dir / "mockups" / f"R_{k + 1}_{slugify(c)}.jpg", quality=92)
     swatch_panel(art, colors).save(kit_dir / "mockups" / "J_colors.jpg", quality=92)
     size_guide(art, sizes).save(kit_dir / "size_guide.jpg", quality=92)
     size_collage(art, sizes).save(kit_dir / "size_collage.jpg", quality=92)
