@@ -45,7 +45,8 @@ RATIO_PX = {"16:9": (1344, 768), "1:1": (1024, 1024), "3:4": (896, 1152), "9:16"
 # Local runs swap it for this short version, which keeps the rules that matter.
 SHORT_TECH = ("Pure solid black on pure white, flat 2D laser-cut steel cut file, one single connected piece, "
               "nothing floating, shapes merge where they cross, bold lines, no hairlines, no dots, "
-              "black and white only, no color, no text, no shadow, no gray, no mockup, generous white margin.")
+              "black and white only, no color, no gray, no gradient, no mist, no ink wash, no text, no shadow, "
+              "no mockup, no screws, no mounting holes, generous white margin.")
 
 
 @dataclass
