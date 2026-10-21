@@ -26,6 +26,9 @@ from tkinter import filedialog, messagebox, ttk
 
 HERE = Path(__file__).resolve().parent
 SCRIPT = HERE / "mycode.py"
+KIT_SCRIPT = HERE / "listing_kit.py"
+KIT_THEMES = ["modern", "deco", "botanical", "coastal", "privacy", "wildlife", "gothic",
+              "western", "kitchen", "mancave", "family", "kids"]
 SETTINGS_PATH = Path.home() / ".cnc_prep_gui_settings.json"
 
 
@@ -286,6 +289,40 @@ class CncPrepGUI(tk.Tk):
         self.status_var = tk.StringVar(value="hazır")
         ttk.Label(runbar, textvariable=self.status_var, foreground="#5B6266").pack(side="right")
 
+        # ---- Etsy listing kit ----------------------------------------------
+        # Uses the same Girdi (a single design file) and Çıktı klasörü; the kit
+        # lands in <çıktı>/kits/<tasarım-adı>/ with the SKU ledger in <çıktı>/kits.
+        kit = ttk.LabelFrame(body, text="Etsy Listing Kiti")
+        kit.pack(fill="x", **pad)
+        row = ttk.Frame(kit); row.pack(fill="x", padx=8, pady=4)
+        ttk.Label(row, text="Tasarım adı (İng.)", width=18, anchor="w").pack(side="left")
+        self.kit_name_var = tk.StringVar()
+        ttk.Entry(row, textvariable=self.kit_name_var).pack(side="left", fill="x", expand=True, padx=4)
+
+        row = ttk.Frame(kit); row.pack(fill="x", padx=8, pady=4)
+        ttk.Label(row, text="Ürün tipi", width=18, anchor="w").pack(side="left")
+        self.kit_type_var = tk.StringVar(value="wall")
+        ttk.Combobox(row, textvariable=self.kit_type_var, width=10, state="readonly",
+                    values=["wall", "privacy"]).pack(side="left")
+        ttk.Label(row, text="Tema (renkler)", width=14, anchor="w").pack(side="left", padx=(16, 0))
+        self.kit_theme_var = tk.StringVar(value="modern")
+        ttk.Combobox(row, textvariable=self.kit_theme_var, width=12, state="readonly",
+                    values=KIT_THEMES).pack(side="left")
+        self.kit_min_cm = LabeledEntry(row, "Min uzun kenar (cm)", width=8)
+        self.kit_min_cm.pack(side="left", padx=(16, 0))
+
+        row = ttk.Frame(kit); row.pack(fill="x", padx=8, pady=4)
+        self.kit_cut_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(row, text="Her beden için kesim dosyalarını da üret",
+                        variable=self.kit_cut_var).pack(side="left")
+        ttk.Label(row, foreground="#5B6266",
+                  text="Min ölçüyü boş bırakırsan tasarım korunarak ölçü aranır (birkaç dakika).").pack(side="left", padx=12)
+
+        row = ttk.Frame(kit); row.pack(fill="x", padx=8, pady=(4, 8))
+        self.kit_btn = ttk.Button(row, text="Listing Kiti Oluştur", command=self._build_kit)
+        self.kit_btn.pack(side="left")
+        ttk.Button(row, text="Kit Klasörünü Aç", command=self._open_kit).pack(side="left", padx=8)
+
         # ---- result summary -----------------------------------------------
         # A batch (folder input) run prints one line per file in the log, but
         # that's prose, not something you can scan. This mirrors it as a
@@ -394,6 +431,7 @@ class CncPrepGUI(tk.Tk):
             "no_svg": self.no_svg_var, "no_dxf": self.no_dxf_var, "no_png": self.no_png_var,
             "canvas_px": self.canvas_px.var, "png_dpi": self.png_dpi.var,
             "preview": self.preview_var,
+            "kit_type": self.kit_type_var, "kit_theme": self.kit_theme_var, "kit_cut": self.kit_cut_var,
         }
 
     def _save_settings(self):
@@ -553,6 +591,7 @@ class CncPrepGUI(tk.Tk):
         self.run_btn.configure(state=state)
         self.dry_run_btn.configure(state=state)
         self.suggest_btn.configure(state=state)
+        self.kit_btn.configure(state=state)
         self.cancel_btn.configure(state=("normal" if running else "disabled"))
         self.status_var.set("çalışıyor..." if running else "hazır")
 
@@ -587,6 +626,61 @@ class CncPrepGUI(tk.Tk):
         self._last_job_kind = "suggest"
         cmd = [find_python(), str(SCRIPT)] + args
         self._launch(cmd, is_suggest=True)
+
+    # ------------------------------------------------------------ listing kit
+
+    def _kit_root(self) -> Path | None:
+        out = self.output_var.get().strip()
+        return Path(out) / "kits" if out else None
+
+    def _build_kit(self):
+        if self.proc is not None:
+            messagebox.showinfo("Cut-Ready", "Zaten bir işlem çalışıyor.")
+            return
+        inp = self.input_var.get().strip()
+        if not inp or not Path(inp).is_file():
+            messagebox.showerror("Cut-Ready", "Listing kiti için Girdi'de tek bir tasarım dosyası seç.")
+            return
+        root = self._kit_root()
+        if root is None:
+            messagebox.showerror("Cut-Ready", "Çıktı klasörü seçmelisin; kit onun içindeki kits/ klasörüne yazılır.")
+            return
+        name = self.kit_name_var.get().strip()
+        if not name:
+            messagebox.showerror("Cut-Ready", "Tasarım adını yaz (İngilizce, ör. Ocean Wave Bundle).")
+            return
+        args = ["-i", inp, "-o", str(root), "--name", name,
+                "--type", self.kit_type_var.get(), "--theme", self.kit_theme_var.get()]
+        if self.kit_min_cm.get():
+            args += ["--min-cm", self.kit_min_cm.get()]
+        if not self.kit_cut_var.get():
+            args.append("--no-cut")
+        # Cut files follow the form's thickness, kerf and simplify settings, so
+        # a kit cuts exactly like a Çalıştır run with the same values would.
+        if self.min_thickness.get():
+            args += ["--min-thickness-mm", self.min_thickness.get()]
+        if self.kerf_mm.get():
+            args += ["--kerf-mm", self.kerf_mm.get()]
+        if self.simplify_mm.get():
+            args += ["--simplify-mm", self.simplify_mm.get()]
+        self._last_job_kind = "kit"
+        cmd = [find_python(), str(KIT_SCRIPT)] + args
+        self._log(f"\n$ {' '.join(cmd)}\n")
+        self._launch(cmd, is_suggest=False)
+
+    def _open_kit(self):
+        root = self._kit_root()
+        if root is None:
+            messagebox.showinfo("Cut-Ready", "Önce bir çıktı klasörü seç.")
+            return
+        slug = "".join(c if c.isalnum() else "-" for c in self.kit_name_var.get().strip().lower()).strip("-")
+        while "--" in slug:
+            slug = slug.replace("--", "-")
+        target = root / slug if slug and (root / slug).exists() else root
+        if not target.exists():
+            messagebox.showinfo("Cut-Ready", "Henüz kit oluşturulmamış.")
+            return
+        open_in_file_manager(target)
 
     # ------------------------------------------------------------ summary table
 

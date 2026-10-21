@@ -179,6 +179,13 @@ Bir tasarımın en küçük boyutlarını (tasarım korunarak ve sadece kırılm
 klasör çıkarır. Senin yazman gereken tek şey title, tag ve giriş paragrafı; onların promptu da
 klasörde hazır.
 
+**Arayüzden:** Girdi'de tasarım dosyasını, Çıktı klasörü'nde ana klasörünü seç. Formun altındaki
+**Etsy Listing Kiti** bölümünde tasarım adını yaz, ürün tipini ve temayı seç, **Listing Kiti
+Oluştur**'a bas. Bitince **Kit Klasörünü Aç** seni doğrudan `<çıktı klasörü>/kits/<tasarım-adı>/`
+klasörüne götürür. Kesim dosyaları formdaki min kalınlık, kerf ve sadeleştirme değerleriyle üretilir.
+
+**Terminalden:**
+
 ```bash
 .venv/bin/python3 listing_kit.py -i ./tasarim.png -o ./kits --name "Ocean Wave Bundle"
 ```
