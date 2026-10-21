@@ -266,6 +266,18 @@ Sonra paketten birkaç prompt dene:
 `--only` vermezsen paketin tamamını üretir (50 prompt × 3 varyant). Gece çalışmaya bırakılabilir.
 `--dry-run`, hiçbir şey üretmeden çalışacak komutları yazdırır.
 
+**Gece üretimi (`gece.command`):** Prompt paketlerini (`.md`) proje klasöründeki `prompts/` klasörüne
+koy, akşam `gece.command`'a çift tıkla. Script Mac'in uyumasını engeller, paketlerden daha önce
+üretilmemiş rastgele prompt'lar seçer ve her birinden 2 varyant olmak üzere ~50 görsel üretir. Sabah:
+
+- `gece/<tarih>/sheet.jpg`: tek parça çıkanların numaralı özeti. En kalın çizgiliden inceye sıralı;
+  kalın olanlar küçük bedende de kesilir. "ince" etiketli olanların min ölçüsü büyük çıkar.
+- `gece/<tarih>/keep/`: o tasarımların saf siyah-beyaz PNG'leri. Doğrudan listing kitine verilebilir.
+- `gece/history.csv`: hangi prompt hangi gece üretildi. Bütün kütüphane bitmeden aynı prompt tekrar seçilmez.
+
+Görsel sayısı için `COUNT=80 ./gece.command`. mflux ya da model başka bir yerdeyse `MFLUX=...` ve
+`MODEL=...` ile ver.
+
 FLUX.1 schnell promptun en fazla ~256 token'ını okur. Standart formattaki uzun Technical bloğu bu
 yüzden yerelde aynı kuralları taşıyan kısa bir sürümle değiştirilir; tasarım tarifi ve Style satırı
 olduğu gibi kalır.
