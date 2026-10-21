@@ -277,6 +277,8 @@ koy, akşam `gece.command`'a çift tıkla. Script Mac'in uyumasını engeller, p
   inceliğinde yerler yüzünden ancak 90 cm üstünde kesilebilenler (`--max-min-cm` ile değişir).
 - `gece/<tarih>/keep/`: o tasarımların saf siyah-beyaz, kenarları yumuşatılmış PNG'leri. Doğrudan
   listing kitine verilebilir.
+- Kontroller iyileşince eski bir geceyi üretmeden yeniden süzmek için:
+  `.venv/bin/python3 batch_generate.py --recheck gece/<tarih>`
 - `gece/history.csv`: hangi prompt hangi gece üretildi. Bütün kütüphane bitmeden aynı prompt tekrar seçilmez.
 
 Görsel sayısı için `COUNT=80 ./gece.command`. mflux ya da model başka bir yerdeyse `MFLUX=...` ve

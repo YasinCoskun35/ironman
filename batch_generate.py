@@ -311,6 +311,81 @@ def pick_jobs(packs: Sequence[Path], only: Optional[set], count: Optional[int], 
     return fresh[: max(1, -(-count // variants))]
 
 
+def evaluate(img: Path, label: str, keep: Path, reject: Path, max_min_cm: Optional[float]):
+    """
+    One generated image through the morning checks: one piece (or a few specks
+    to drop), thin parts against the size limit, edges smoothed. Writes the
+    clean PNG into keep/ or the image into reject/ and returns
+    (pieces, thinnest_pct, verdict, kept_items, rejected_items) for the sheets.
+    """
+    import cv2
+    mask = _cut_mask(img)
+    if mask is None:
+        pieces, verdict, thin = 0, "boş", ""
+    else:
+        pieces = cv2.connectedComponents(mask, connectivity=8)[0] - 1
+        verdict = "tek parça" if pieces == 1 else f"{pieces} parça"
+        thin = thinnest_pct(mask) if pieces == 1 else ""
+    repaired = None
+    if pieces > 1:
+        body, share = drop_islands(mask)
+        if share <= REPAIR_MAX_SHARE:
+            repaired, mask = share, body
+            thin = thinnest_pct(mask)
+            verdict = f"onarıldı ({pieces - 1} küçük parça silindi, %{share * 100:.1f})"
+    if pieces != 1 and repaired is None:
+        shutil.copy2(img, reject / img.name)
+        return pieces, thin, verdict, [], [(reject / img.name, f"{label} {verdict}")]
+    name = img.name if repaired is None else img.stem + "_onarildi.png"
+    min_cm = min_size_cm(thin) if max_min_cm and thin != "" else None
+    if min_cm and min_cm > max_min_cm:
+        save_clean(mask, reject / name)
+        verdict = f"ince detay: en küçük ~{min_cm:.0f} cm"
+        return pieces, thin, verdict, [], [(reject / name, f"{label} {verdict}")]
+    save_clean(mask, keep / name)
+    size = f" min ~{min_cm:.0f} cm" if min_cm else (" ince" if thin != "" and thin < 0.35 else "")
+    tag = " [onarıldı]" if repaired is not None else ""
+    sort_key = -min_cm if min_cm else (thin if thin != "" else 0.0)
+    if min_cm:
+        verdict += f", en küçük ~{min_cm:.0f} cm"
+    return pieces, thin, verdict, [(sort_key, keep / name, f"{label}{size}{tag}")], []
+
+
+def recheck(night: Path, max_min_cm: Optional[float] = MAX_MIN_CM) -> int:
+    """
+    Re-run the morning checks on a night already generated (its raw/ folder),
+    e.g. after the checks improved: keep/ and reject/ are rebuilt, the sheets
+    redrawn and recheck.csv written. Nothing is generated.
+    """
+    import re
+    raw, keep, reject = night / "raw", night / "keep", night / "reject"
+    imgs = sorted(raw.glob("*.png"))
+    if not imgs:
+        print(f"error: {raw} içinde görsel yok", file=sys.stderr)
+        return 2
+    for d in (keep, reject):
+        shutil.rmtree(d, ignore_errors=True)
+        d.mkdir(parents=True)
+    kept, rejected, rows = [], [], []
+    for img in imgs:
+        m = re.search(r"_(\d+)_(.+)_s\d+$", img.stem)
+        label = f"#{int(m.group(1))} {m.group(2).replace('-', ' ')[:20]}" if m else img.stem[:24]
+        pieces, thin, verdict, k, r = evaluate(img, label, keep, reject, max_min_cm)
+        kept += k
+        rejected += r
+        rows.append([img.name, pieces, thin, verdict])
+        print(f"{img.name[:50]:50s} -> {verdict}", flush=True)
+    with (night / "recheck.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["file", "pieces", "thinnest_pct", "verdict"])
+        w.writerows(rows)
+    kept.sort(key=lambda t: -t[0])
+    contact_sheet([(pth, label) for _, pth, label in kept], night / "sheet.jpg")
+    contact_sheet(rejected, night / "reject_sheet.jpg")
+    print(f"\nbitti: {len(imgs)} görsel, {len(kept)} kullanılabilir -> {keep}  (özet: {night / 'sheet.jpg'})")
+    return 0
+
+
 def run(packs: Sequence[Path], out: Path, only: Optional[set], variants: int, seed0: int, steps: int,
         quantize: int, exe: str, model_path: Optional[str], dry_run: bool, check: bool,
         count: Optional[int] = None, nightly: bool = False, lora: Optional[str] = None,
@@ -355,45 +430,11 @@ def run(packs: Sequence[Path], out: Path, only: Optional[set], variants: int, se
                 shutil.copy2(img, keep / img.name)
                 rows.append([j.pack, p.number, p.name, seed, "", "", "kontrol edilmedi"])
                 continue
-            mask = _cut_mask(img)
-            if mask is None:
-                pieces, verdict, thin = 0, "boş", ""
-            else:
-                import cv2
-                pieces = cv2.connectedComponents(mask, connectivity=8)[0] - 1
-                verdict = "tek parça" if pieces == 1 else f"{pieces} parça"
-                thin = thinnest_pct(mask) if pieces == 1 else ""
-            repaired = None
-            if pieces > 1:
-                body, share = drop_islands(mask)
-                if share <= REPAIR_MAX_SHARE:
-                    repaired, mask = share, body
-                    thin = thinnest_pct(mask)
-                    verdict = f"onarıldı ({pieces - 1} küçük parça silindi, %{share * 100:.1f})"
-            min_cm = None
-            if pieces == 1 or repaired is not None:
-                name = img.name if repaired is None else img.stem + "_onarildi.png"
-                save_clean(mask, keep / name)
-                if max_min_cm and thin != "":
-                    min_cm = min_size_cm(thin)
-                    if min_cm > max_min_cm:
-                        (keep / name).replace(reject / name)
-                        verdict = f"ince detay: en küçük ~{min_cm:.0f} cm"
-                        rejected.append((reject / name, f"#{p.number} {p.name[:20]} {verdict}"))
-                        rows.append([j.pack, p.number, p.name, seed, pieces, thin, verdict])
-                        print(f"       -> {verdict}", flush=True)
-                        continue
-                size = f" min ~{min_cm:.0f} cm" if min_cm else (" ince" if thin != "" and thin < 0.35 else "")
-                tag = " [onarıldı]" if repaired is not None else ""
-                sort_key = -min_cm if min_cm else (thin if thin != "" else 0.0)
-                kept.append((sort_key, keep / name, f"#{p.number} {p.name[:20]}{size}{tag}"))
-                if min_cm:
-                    verdict += f", en küçük ~{min_cm:.0f} cm"
-            else:
-                shutil.copy2(img, reject / img.name)
-                rejected.append((reject / img.name, f"#{p.number} {p.name[:20]} {verdict}"))
+            pieces, thin, verdict, k, r = evaluate(img, f"#{p.number} {p.name[:20]}", keep, reject, max_min_cm)
+            kept += k
+            rejected += r
             rows.append([j.pack, p.number, p.name, seed, pieces, thin, verdict])
-            print(f"       -> {verdict}" + (f", en ince %{thin}" if thin != "" else ""), flush=True)
+            print(f"       -> {verdict}" + (f", en ince %{thin}" if thin != "" and not r else ""), flush=True)
 
     if dry_run:
         return 0
@@ -423,8 +464,10 @@ def run(packs: Sequence[Path], out: Path, only: Optional[set], variants: int, se
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="batch_generate",
                                  description="Generate prompt packs locally with mflux and sort the cuttable results.")
-    ap.add_argument("-p", "--pack", required=True, type=Path, nargs="+", help="prompt pack markdown file(s)")
-    ap.add_argument("-o", "--output", required=True, type=Path, help="output folder")
+    ap.add_argument("-p", "--pack", type=Path, nargs="+", help="prompt pack markdown file(s)")
+    ap.add_argument("-o", "--output", type=Path, help="output folder")
+    ap.add_argument("--recheck", type=Path, default=None,
+                    help="re-run the checks on a finished night (e.g. gece/2026-10-21), generate nothing")
     ap.add_argument("--only", default="", help="comma-separated prompt numbers, e.g. 1,3,9 (single pack)")
     ap.add_argument("--count", type=int, default=None,
                     help="make about this many images from random, not-yet-run prompts across all packs")
@@ -444,6 +487,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     help="reject designs whose thinnest parts need a long side above this (0 = no size check)")
     ap.add_argument("--dry-run", action="store_true", help="print the commands, generate nothing")
     a = ap.parse_args(argv)
+    if a.recheck:
+        return recheck(a.recheck, a.max_min_cm or None)
+    if not a.pack or not a.output:
+        ap.error("-p/--pack and -o/--output are required (unless --recheck)")
     only = {int(x) for x in a.only.split(",") if x.strip()} or None
     steps = a.steps or (9 if a.lora else 4)
     exe = a.mflux or ("mflux-generate-z-image-turbo" if a.lora else "mflux-generate")
