@@ -807,10 +807,12 @@ def write_listing_md(path: Path, kit: Dict, sizes: List[Size]) -> None:
 
 **Gümrük:** {CUSTOMS}
 
-## Görseller (mockups/)
-- `A_*` … stüdyo yerleşim görselleri, kesim dosyasıyla birebir aynı geometri ve gerçek ölçek
-- `J_colors.jpg` renk paneli · `size_guide.jpg` · `size_collage.jpg`
-- Ana görsel (lüks oda) hâlâ ChatGPT/Firefly'da: kesim dosyasını yükle, v6'daki A görseli tarifini kullan.
+## Görseller
+- **Kitten:** `size_guide.jpg` ve `size_collage.jpg` (ölçek görselleri; AI ölçeği tutturamaz)
+- **ChatGPT'den:** oda görselleri, renk paneli (J), yakın plan (F). Kesim dosyasının PNG'sini yükle,
+  v6'daki görsel tariflerini kullan; renkler: {", ".join(kit['colors'])}.
+- **Kontrol:** her AI görselinde siluet kesim dosyasıyla aynı mı? Bıyık, uç, ince kol gibi
+  detaylar kopmuş ya da eklenmiş mi? Değişmişse o görseli yeniden üret.
 
 ## Title, tag ve giriş paragrafı için prompt
 Bu tasarımın PNG'si ile birlikte ChatGPT'ye ya da Claude'a ver:
@@ -828,10 +830,10 @@ Bu tasarımın PNG'si ile birlikte ChatGPT'ye ya da Claude'a ver:
 def build_kit(src: Path, out_root: Path, name: str, product: str = "wall", theme: str = "modern",
               min_cm: Optional[float] = None, do_cut: bool = True, rooms: Optional[Path] = None,
               jobs: int = 4, sku: Optional[str] = None, overrides: Optional[Dict] = None,
-              log=print) -> Dict:
+              mockups: bool = False, log=print) -> Dict:
     overrides = overrides or {}
     kit_dir = out_root / slugify(name)
-    (kit_dir / "mockups").mkdir(parents=True, exist_ok=True)
+    kit_dir.mkdir(parents=True, exist_ok=True)
 
     ref = cut_config(600.0, overrides)
     fw, fh, ink_ar = measure_ink(src, ref)
@@ -856,6 +858,7 @@ def build_kit(src: Path, out_root: Path, name: str, product: str = "wall", theme
         "sku": sku or next_sku(out_root / "sku_ledger.csv", name),
         "ink_ratio": ratio, "horizontal": horizontal, "min_long_cm": min_long, "min_source": source,
         "colors": colors, "sizes": [asdict(s) for s in sizes], "size_search": size_info,
+        "mockups": mockups,
     }
 
     if do_cut:
@@ -864,14 +867,19 @@ def build_kit(src: Path, out_root: Path, name: str, product: str = "wall", theme
 
     art = design_mask(src, ref)
     hero = sizes[len(sizes) // 2]
-    for k, c in enumerate(colors):
-        studio_scene(art, c, k, (hero.width_cm, hero.height_cm)).save(
-            kit_dir / "mockups" / f"A_{k + 1}_{slugify(c)}.jpg", quality=92)
-    if rooms and rooms.is_dir():
-        for k, room in enumerate(load_rooms(rooms)):
-            scene, c = room_scene(art, colors, room, rooms, k, hero.width_cm)
-            scene.save(kit_dir / "mockups" / f"R_{k + 1}_{slugify(c)}.jpg", quality=92)
-    swatch_panel(art, colors).save(kit_dir / "mockups" / "J_colors.jpg", quality=92)
+    # Room mockups are off by default: AI-generated rooms (ChatGPT, from the cut
+    # file) look far better than a 2D composite can. The size guide stays on,
+    # because scale is the one thing an image model gets wrong.
+    if mockups or rooms:
+        (kit_dir / "mockups").mkdir(exist_ok=True)
+        for k, c in enumerate(colors):
+            studio_scene(art, c, k, (hero.width_cm, hero.height_cm)).save(
+                kit_dir / "mockups" / f"A_{k + 1}_{slugify(c)}.jpg", quality=92)
+        if rooms and rooms.is_dir():
+            for k, room in enumerate(load_rooms(rooms)):
+                scene, c = room_scene(art, colors, room, rooms, k, hero.width_cm)
+                scene.save(kit_dir / "mockups" / f"R_{k + 1}_{slugify(c)}.jpg", quality=92)
+        swatch_panel(art, colors).save(kit_dir / "mockups" / "J_colors.jpg", quality=92)
     size_guide(art, sizes).save(kit_dir / "size_guide.jpg", quality=92)
     size_collage(art, sizes).save(kit_dir / "size_collage.jpg", quality=92)
 
@@ -892,7 +900,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--theme", choices=sorted(THEMES), default="modern", help="picks the four alternative colours (v6 section 4)")
     p.add_argument("--min-cm", type=float, default=None, help="known minimum long side in cm; skips the size search")
     p.add_argument("--no-cut", action="store_true", help="skip per-size cut files")
-    p.add_argument("--rooms", type=Path, default=None, help="folder with empty-room photos and rooms.json")
+    p.add_argument("--mockups", action="store_true", help="also render 2D studio mockups and a colour panel (off: use AI rooms)")
+    p.add_argument("--rooms", type=Path, default=None, help="folder with empty-room photos (implies --mockups)")
     p.add_argument("--sku", default=None, help="use this SKU instead of the next one from the ledger")
     p.add_argument("-j", "--jobs", type=int, default=4, help="parallel workers for the size search")
     p.add_argument("--min-thickness-mm", type=float, default=None)
@@ -909,7 +918,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     overrides = {k: v for k, v in (("min_thickness_mm", a.min_thickness_mm), ("kerf_mm", a.kerf_mm),
                                    ("simplify_mm", a.simplify_mm)) if v is not None}
     build_kit(a.input, a.output, a.name, a.product, a.theme, a.min_cm, not a.no_cut, a.rooms,
-              a.jobs, a.sku, overrides)
+              a.jobs, a.sku, overrides, a.mockups)
     return 0
 
 

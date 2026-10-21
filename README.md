@@ -189,8 +189,6 @@ klasörde hazır.
 |---|---|
 | `listing.md` | Bedenler, Etsy Size değerleri (≤ 20 karakter), fiyat tablosu (maliyet / liste / görünen / kâr), SKU, varyasyonlar, açıklamanın sabit blokları, gümrük satırı, title–tag–giriş promptu |
 | `cut/<beden>/` | Her beden için kesim dosyaları (SVG + DXF + 4500×5100 PNG), EazyDemand ayarlarıyla |
-| `mockups/A_*.jpg` | Ana renk ve 4 alternatif renkte stüdyo yerleşim görseli; geometri kesim dosyasıyla birebir aynı, ölçek gerçek |
-| `mockups/J_colors.jpg` | 5 renk paneli |
 | `size_guide.jpg`, `size_collage.jpg` | 175 cm insanla ölçek görselleri |
 | `kit.json` | Hepsi makinenin okuyacağı formatta |
 
@@ -208,9 +206,12 @@ Sık kullanılan bayraklar:
 | `--min-cm 45` | Bilinen en küçük uzun kenar (cm); ölçü aramasını atlar |
 | `--no-cut` | Kesim dosyalarını üretmez (hızlı deneme) |
 | `--simplify-mm 0.5` | İnce paralel çizgili tasarımlarda düğüm sayısını düşürür |
-| `--rooms ./rooms` | Gerçek boş oda fotoğraflarına da yerleştirir (aşağıya bak) |
+| `--mockups` | 2D stüdyo yerleşim görselleri ve renk paneli de üretir (varsayılan kapalı; oda görselleri ChatGPT'de çok daha iyi çıkıyor) |
+| `--rooms ./rooms` | Boş oda fotoğraflarına yerleştirir (`--mockups`'ı açar; aşağıya bak) |
 
-**Gerçek oda fotoğrafları:** `rooms/` klasörüne duvarı boş oda fotoğraflarını koy ve yanına bir
+Oda mockup'ları ve renk paneli ChatGPT'de, kesim dosyasının PNG'si yüklenerek üretilir; kit ölçek görsellerini (boyut rehberi, kolaj) üretir, çünkü görüntü modelleri ölçeği tutturamaz.
+
+**Boş oda fotoğrafları (isteğe bağlı):** `rooms/` klasörüne duvarı boş oda fotoğraflarını koy ve yanına bir
 `rooms.json` yaz. `box`, eserin sığacağı dikdörtgen (piksel: x, y, genişlik, yükseklik); `light`,
 ışığın geldiği taraf.
 
