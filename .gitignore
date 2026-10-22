@@ -3,9 +3,11 @@ __pycache__/
 *.pyc
 .claude/
 .DS_Store
+# yerel AI / LoRA denemelerinden yerelde kalan klasörler (kodu arsiv/lora-yerel-ai branch'inde)
 prompts/
 gece/
 gen_out/
+z_test/
 lora/
 lora_data/
 lora_train*/
