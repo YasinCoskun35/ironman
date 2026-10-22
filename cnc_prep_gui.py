@@ -206,6 +206,12 @@ class CncPrepGUI(tk.Tk):
         self.kerf_mm = LabeledEntry(row, "Kerf (mm)", default="1.8"); self.kerf_mm.pack(side="left")
         self.gap_factor = LabeledEntry(row, "Boşluk çarpanı", default="1.0"); self.gap_factor.pack(side="left", padx=(16, 0))
 
+        row = ttk.Frame(st); row.pack(fill="x", padx=8, pady=4)
+        # Per order (customer picked screw mounting), so the count always starts at 0.
+        self.screw_holes = LabeledEntry(row, "Vida deliği adedi", default="0"); self.screw_holes.pack(side="left")
+        self.screw_hole_mm = LabeledEntry(row, "Delik çapı (mm)", default="5"); self.screw_hole_mm.pack(side="left", padx=(16, 0))
+        ttk.Label(row, text="0 = yok, -1 = ene göre otomatik (2/3/4)", foreground="#666").pack(side="left", padx=(12, 0))
+
         row = ttk.Frame(st); row.pack(fill="x", padx=8, pady=(0, 6))
         self.fill_gaps_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(row, text="Dar boşlukları otomatik kapat (--fill-narrow-gaps)",
@@ -426,6 +432,7 @@ class CncPrepGUI(tk.Tk):
             "native_size": self.native_size_var,
             "min_thickness": self.min_thickness.var, "sharp_tip_deg": self.sharp_tip_deg.var,
             "kerf_mm": self.kerf_mm.var, "gap_factor": self.gap_factor.var,
+            "screw_hole_mm": self.screw_hole_mm.var,
             "fill_gaps": self.fill_gaps_var, "floating": self.floating_var,
             "thicken_mode": self.thicken_mode_var, "tip_policy": self.tip_policy_var,
             "no_svg": self.no_svg_var, "no_dxf": self.no_dxf_var, "no_png": self.no_png_var,
@@ -498,6 +505,10 @@ class CncPrepGUI(tk.Tk):
         args += ["--floating", self.floating_var.get()]
         args += ["--thicken-mode", self.thicken_mode_var.get()]
         args += ["--tip-policy", self.tip_policy_var.get()]
+        if self.screw_holes.get() not in ("", "0"):
+            args += ["--screw-holes", self.screw_holes.get()]
+            if self.screw_hole_mm.get():
+                args += ["--screw-hole-mm", self.screw_hole_mm.get()]
 
         if self.work_res.get():
             args += ["--work-res", self.work_res.get()]

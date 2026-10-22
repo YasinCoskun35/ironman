@@ -176,6 +176,10 @@ class Config:
     bridge_width_mm: Optional[float] = None   # defaults to min_thickness_mm
     max_bridges: int = 24                 # sanity cap per design
 
+    # --- mounting -----------------------------------------------------------
+    screw_holes: int = 0                  # 0 = none, -1 = by width (2 / 3 / 4), N = exactly N
+    screw_hole_mm: float = 5.0            # hole diameter
+
     # --- vectorisation ------------------------------------------------------
     simplify_mm: float = 0.15             # Douglas-Peucker epsilon
     corner_deg: float = 48.0              # turn angle kept as a hard corner
@@ -207,6 +211,74 @@ class Config:
 
     def mm2_to_px2(self, mm2: float) -> float:
         return mm2 / (self.mm_per_px ** 2) if self.mm_per_px else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Mounting holes
+# ---------------------------------------------------------------------------
+
+def add_screw_holes(mask: np.ndarray, cfg: Config) -> Tuple[np.ndarray, Dict]:
+    """
+    Punch screw holes for wall mounting where the metal is strongest.
+
+    Holes are spread across the width (2 up to 60 cm, 3 up to 120 cm, 4 above
+    when screw_holes is -1). Each hole goes to the column nearest its target x
+    that has room, at that column's deepest point, preferring the upper two
+    thirds; it must keep a ring of metal one hole-diameter wide around it, or at least the minimum
+    thickness if the design has no such spot. Placed before the kerf offset,
+    so the holes get the same compensation as every other cut.
+    """
+    n = cfg.screw_holes
+    info: Dict = {"requested": n, "holes": []}
+    if not n or not mask.any():
+        return mask, info
+    ys, xs = np.nonzero(mask)
+    x0, x1, y0, y1 = int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max())
+    width_px, height_px = x1 - x0 + 1, y1 - y0 + 1
+    if n < 0:
+        w_mm = width_px * cfg.mm_per_px
+        n = 2 if w_mm <= 600 else 3 if w_mm <= 1200 else 4
+    info["requested"] = n
+    fracs = {1: [0.5], 2: [0.12, 0.88], 3: [0.10, 0.50, 0.90],
+             4: [0.08, 0.36, 0.64, 0.92]}.get(n) or list(np.linspace(0.08, 0.92, n))
+    r = cfg.px(cfg.screw_hole_mm / 2.0)
+    dt = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    upper = y0 + int(height_px * 2 / 3)
+    min_apart = 0.1 * width_px
+    out = mask.copy()
+    placed: List[Tuple[int, int]] = []
+
+    def spot(tx: float):
+        for margin_mm in (cfg.screw_hole_mm, max(cfg.min_thickness_mm, 3.0)):
+            need = r + cfg.px(margin_mm)
+            for band in (0.06, 0.12, 0.20):
+                lo = int(max(x0, tx - band * width_px))
+                hi = int(min(x1, tx + band * width_px)) + 1
+                for ylim in (upper, y1 + 1):
+                    win = dt[y0:ylim, lo:hi]
+                    if win.size == 0:
+                        continue
+                    # nearest column to the target that has room, at its deepest point
+                    deepest, rows = win.max(axis=0), win.argmax(axis=0)
+                    cols = np.nonzero(deepest >= need)[0]
+                    cols = [c for c in cols if all(abs(c + lo - px) > min_apart for px, _ in placed)]
+                    if not cols:
+                        continue
+                    c = min(cols, key=lambda c: abs(c + lo - tx))
+                    return int(c) + lo, int(rows[c]) + y0, margin_mm
+        return None
+
+    for f in fracs:
+        found = spot(x0 + f * width_px)
+        if found is None:
+            continue
+        hx, hy, margin_mm = found
+        placed.append((hx, hy))
+        cv2.circle(out, (hx, hy), max(1, int(round(r))), 0, -1, lineType=cv2.LINE_8)
+        info["holes"].append({"x_mm": round(hx * cfg.mm_per_px, 1), "y_mm": round(hy * cfg.mm_per_px, 1),
+                              "d_mm": cfg.screw_hole_mm, "metal_around_mm": round(margin_mm, 1)})
+    info["placed"] = len(info["holes"])
+    return out, info
 
 
 # ---------------------------------------------------------------------------
@@ -2357,6 +2429,8 @@ def process_file(src: Path, out_dir: Path, cfg: Config) -> Dict:
 
         design_change = measure_design_change(base, mask, cfg)
 
+        mask, screw_info = add_screw_holes(mask, cfg)
+
         mask, kerf_info = apply_kerf_offset(mask, cfg)
 
         subpaths, vec_stats = vectorize(mask, cfg)
@@ -2380,6 +2454,7 @@ def process_file(src: Path, out_dir: Path, cfg: Config) -> Dict:
             "kerf": kerf_info,
             "vector": vec_stats,
             "bridges": [asdict(b) for b in bridges],
+            "screw_holes": screw_info,
         })
 
         # --- warnings the operator actually needs to see --------------------
@@ -2419,6 +2494,10 @@ def process_file(src: Path, out_dir: Path, cfg: Config) -> Dict:
                 + (f" and closed {lost} of {design_change['openings_total']} cut-out(s)" if lost else "")
                 + " — the cut part will not match the artwork; use a larger size "
                   "(see --suggest-size, 'tasarım korunarak')")
+        if screw_info.get("requested") and screw_info.get("placed", 0) < screw_info["requested"]:
+            report["warnings"].append(
+                f"only {screw_info.get('placed', 0)} of {screw_info['requested']} screw holes fit: the design "
+                f"has no metal wide enough for a {cfg.screw_hole_mm} mm hole elsewhere — add a solid tab or bar")
         if float_info.get("bridge_cap_hit"):
             report["warnings"].append(
                 f"more islands than --max-bridges ({cfg.max_bridges}); some remain unbridged")
@@ -2617,6 +2696,11 @@ def build_parser() -> argparse.ArgumentParser:
     fl.add_argument("--max-bridges", type=int, default=24,
                     help="safety cap on tabs added per design")
 
+    mt = p.add_argument_group("mounting")
+    mt.add_argument("--screw-holes", type=int, default=0,
+                    help="screw holes for wall mounting: 0 = none, -1 = by width (2/3/4), N = exactly N")
+    mt.add_argument("--screw-hole-mm", type=float, default=5.0, help="screw hole diameter")
+
     vc = p.add_argument_group("vectorisation")
     vc.add_argument("--simplify-mm", type=float, default=0.15,
                     help="Douglas-Peucker tolerance; larger = fewer nodes")
@@ -2661,6 +2745,8 @@ def config_from_args(a: argparse.Namespace) -> Config:
         floating=a.floating,
         bridge_width_mm=a.bridge_width_mm,
         max_bridges=a.max_bridges,
+        screw_holes=a.screw_holes,
+        screw_hole_mm=a.screw_hole_mm,
         simplify_mm=a.simplify_mm,
         corner_deg=a.corner_deg,
         bezier_tension=a.bezier_tension,
@@ -2735,6 +2821,10 @@ def log_result(rep: Dict, quiet: bool) -> None:
           f"min feature {_fmt_feature(t.get('min_feature_mm_before'))}"
           f"->{_fmt_feature(t.get('min_feature_mm_after'))}  "
           f"{rep['elapsed_s']}s")
+    holes = rep.get("screw_holes", {}).get("holes", [])
+    if holes:
+        print(f"       vida deliği: {len(holes)} x {holes[0]['d_mm']}mm @ "
+              + ", ".join(f"({h['x_mm']:.0f}, {h['y_mm']:.0f})" for h in holes) + " mm")
     for w in rep["warnings"]:
         print(f"       ! {w}")
 
