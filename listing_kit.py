@@ -352,6 +352,35 @@ def cut_sizes(src: Path, out: Path, sizes: List[Size], fw: float, overrides: Dic
     return reports
 
 
+def order_cut(src: Path, out_root: Path, name: str, sku: str, width_cm: float, overrides: Dict,
+              log=print) -> Dict:
+    """
+    One cut file for one order, e.g. a size with screw holes the customer chose.
+    Same canvas maths as the kit (the metal, not the canvas, gets the width), so
+    the part matches the listing; written to <kit>/orders/.
+    """
+    ref = cut_config(600.0, overrides)
+    fw, _, ink_ar = measure_ink(src, ref)
+    height_cm = round(width_cm * ink_ar)
+    holes = overrides.get("screw_holes", 0)
+    tag = f"{width_cm:g}x{height_cm:g}cm" + ("_screw" if holes else "")
+    d = out_root / slugify(name) / "orders" / f"{sku}_{tag}"
+    cfg = cut_config(width_cm * 10.0 / fw, overrides)
+    rep = cnc.process_file(src, d, cfg)
+    outputs = []
+    for p in map(Path, rep["outputs"]):
+        target = p.with_name(f"{sku}_{tag}{p.name[len(src.stem):]}")
+        p.replace(target)
+        outputs.append(str(target))
+    rep["outputs"] = outputs
+    for h in rep.get("screw_holes", {}).get("holes", []):
+        log(f"[order] vida deliği {h['d_mm']} mm @ x={h['x_mm']:.0f} y={h['y_mm']:.0f} mm")
+    for w in rep["warnings"]:
+        log(f"[order] ! {w}")
+    log(f"[order] {rep['status']}: {d}")
+    return rep
+
+
 # ---------------------------------------------------------------------------
 # Mockups
 # ---------------------------------------------------------------------------
@@ -907,6 +936,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-thickness-mm", type=float, default=None)
     p.add_argument("--kerf-mm", type=float, default=None)
     p.add_argument("--simplify-mm", type=float, default=None, help="0.5 for dense thin-line designs")
+    p.add_argument("--order-width-cm", type=float, default=None,
+                   help="cut only this width for an order (into <kit>/orders/), no kit; use with --sku")
+    p.add_argument("--screw-holes", type=int, default=0,
+                   help="screw holes in the cut: -1 = by width (2/3/4), N = exactly N")
+    p.add_argument("--screw-hole-mm", type=float, default=5.0)
     return p
 
 
@@ -917,6 +951,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
     overrides = {k: v for k, v in (("min_thickness_mm", a.min_thickness_mm), ("kerf_mm", a.kerf_mm),
                                    ("simplify_mm", a.simplify_mm)) if v is not None}
+    if a.screw_holes:
+        overrides.update(screw_holes=a.screw_holes, screw_hole_mm=a.screw_hole_mm)
+    if a.order_width_cm:
+        if not a.sku:
+            print("error: --order-width-cm needs the listing's --sku", file=sys.stderr)
+            return 2
+        rep = order_cut(a.input, a.output, a.name, a.sku, a.order_width_cm, overrides)
+        return 0 if rep["status"] != "failed" else 1
     build_kit(a.input, a.output, a.name, a.product, a.theme, a.min_cm, not a.no_cut, a.rooms,
               a.jobs, a.sku, overrides, a.mockups)
     return 0

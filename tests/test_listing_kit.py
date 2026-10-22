@@ -94,3 +94,23 @@ class TestSku:
 
 def test_slugify():
     assert lk.slugify("Ocean Wave Bundle!") == "ocean-wave-bundle"
+
+
+def test_order_cut_puts_screw_holes_in_one_size(tmp_path):
+    import cv2
+    import numpy as np
+    img = np.full((420, 1600), 255, np.uint8)                       # white margin around the metal
+    cv2.rectangle(img, (100, 300), (1500, 360), 0, -1)
+    for cx in range(220, 1450, 240):
+        cv2.ellipse(img, (cx, 300), (110, 200), 0, 180, 360, 0, 8)
+    src = tmp_path / "topper.png"
+    cv2.imwrite(str(src), img)
+    rep = lk.order_cut(src, tmp_path / "kits", "Victorian Door Topper", "2026101801", 150,
+                       {"screw_holes": -1, "work_res": 2.0}, log=lambda *_: None)
+    assert rep["status"] != "failed", rep["errors"]
+    assert rep["screw_holes"]["placed"] == 4
+    names = [Path(o).name for o in rep["outputs"]]
+    assert any(n.startswith("2026101801_150x") and n.endswith("cm_screw.dxf") for n in names)
+    xs = np.nonzero(img < 128)[1]
+    ink_w = rep["size_mm"][0] * (xs.max() - xs.min() + 1) / img.shape[1]
+    assert abs(ink_w - 1500) < 15                                    # the metal, not the canvas, is 150 cm
