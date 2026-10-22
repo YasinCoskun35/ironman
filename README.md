@@ -155,8 +155,8 @@ EazyDemand gereksinimleri: PNG + DXF format, dosya < 3MB, en ince çizgi/delik �
 kalınlığı 1.8mm'e çeker: EazyDemand'ın 1.5mm sınırına tam oturmak yerine 0.3mm pay bırakır, böylece
 kesimde inceldiği için reddedilen çizgi kalmaz.
 
-**Vida deliği (müşteri "screw hole" montaj seçtiyse):** Yapısal ayarlardaki **Vida deliği adedi**'ne
-`-1` yaz (ene göre otomatik: 60 cm'e kadar 2, 120 cm'e kadar 3, üstü 4) ya da istediğin sayıyı;
+**Vida deliği (müşteri "screw hole" montaj seçtiyse):** Formun altındaki **Sipariş Kesimi**
+bölümünde **Vida deliği adedi**'ne `-1` yaz (ene göre otomatik: 60 cm'e kadar 2, 120 cm'e kadar 3, üstü 4) ya da istediğin sayıyı;
 **Delik çapı** varsayılan 5 mm. Delikler **ağırlık merkezine göre** konur: ağırlık merkezinden geçen
 dikey çizginin iki yanına simetrik (her vida eşit yük taşır, parça düz durur), çiftler aynı hizada,
 mümkünse ağırlık merkezinin üstünde (parça deliklerden sarkar, öne devrilmez). Her deliğin etrafında
@@ -199,7 +199,11 @@ klasörüne götürür. Kesim dosyaları formdaki min kalınlık, kerf ve sadele
 
 **Sipariş kesimi (ör. vida delikli tek beden):** Kiti baştan kurmadan, listingdeki ölçüde tek bir
 kesim dosyası çıkarır; genişlik metale uygulanır (tuvale değil), yani parça listingdeki ölçüyle aynı
-olur. Dosyalar `<kit>/orders/<SKU>_150x42cm_screw/` altına düşer:
+olur. Dosyalar `<kit>/orders/<SKU>_150x42cm_screw/` altına düşer.
+
+Arayüzden: Girdi'de tasarımı, kit bölümünde tasarım adını seç; **Sipariş Kesimi** bölümünde listing
+SKU'sunu, genişliği (cm) ve vida deliği adedini (`-1` otomatik, `0` yok) yaz, **Sipariş Kesimi
+Oluştur**'a bas. **Sipariş Klasörünü Aç** dosyaların olduğu yeri açar. Terminalden:
 
 ```bash
 .venv/bin/python3 listing_kit.py -i ./tasarim.png -o ./kits --name "Victorian Door Topper" --sku 2026101801 --order-width-cm 150 --screw-holes -1

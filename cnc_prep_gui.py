@@ -206,12 +206,6 @@ class CncPrepGUI(tk.Tk):
         self.kerf_mm = LabeledEntry(row, "Kerf (mm)", default="1.8"); self.kerf_mm.pack(side="left")
         self.gap_factor = LabeledEntry(row, "Boşluk çarpanı", default="1.0"); self.gap_factor.pack(side="left", padx=(16, 0))
 
-        row = ttk.Frame(st); row.pack(fill="x", padx=8, pady=4)
-        # Per order (customer picked screw mounting), so the count always starts at 0.
-        self.screw_holes = LabeledEntry(row, "Vida deliği adedi", default="0"); self.screw_holes.pack(side="left")
-        self.screw_hole_mm = LabeledEntry(row, "Delik çapı (mm)", default="5"); self.screw_hole_mm.pack(side="left", padx=(16, 0))
-        ttk.Label(row, text="0 = yok, -1 = ene göre otomatik (2/3/4)", foreground="#666").pack(side="left", padx=(12, 0))
-
         row = ttk.Frame(st); row.pack(fill="x", padx=8, pady=(0, 6))
         self.fill_gaps_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(row, text="Dar boşlukları otomatik kapat (--fill-narrow-gaps)",
@@ -328,6 +322,26 @@ class CncPrepGUI(tk.Tk):
         self.kit_btn = ttk.Button(row, text="Listing Kiti Oluştur", command=self._build_kit)
         self.kit_btn.pack(side="left")
         ttk.Button(row, text="Kit Klasörünü Aç", command=self._open_kit).pack(side="left", padx=8)
+
+        # ---- order cut ----------------------------------------------------
+        # One size for one order (e.g. the customer picked screw mounting). Uses
+        # the kit's canvas maths so the metal, not the canvas, gets the width;
+        # lands in <çıktı>/kits/<tasarım-adı>/orders/. Same Girdi and design name.
+        order = ttk.LabelFrame(body, text="Sipariş Kesimi (tek beden, vida deliği)")
+        order.pack(fill="x", **pad)
+        row = ttk.Frame(order); row.pack(fill="x", padx=8, pady=4)
+        self.order_sku = LabeledEntry(row, "Listing SKU", width=14); self.order_sku.pack(side="left")
+        self.order_width = LabeledEntry(row, "Genişlik (cm)", width=8); self.order_width.pack(side="left", padx=(16, 0))
+        row = ttk.Frame(order); row.pack(fill="x", padx=8, pady=4)
+        # The hole count always starts at 0: holes go only into the orders that asked for them.
+        self.screw_holes = LabeledEntry(row, "Vida deliği adedi", width=8, default="0"); self.screw_holes.pack(side="left")
+        self.screw_hole_mm = LabeledEntry(row, "Delik çapı (mm)", width=8, default="5"); self.screw_hole_mm.pack(side="left", padx=(16, 0))
+        ttk.Label(row, foreground="#5B6266",
+                  text="0 = yok, -1 = otomatik (2/3/4); ağırlık merkezine simetrik").pack(side="left", padx=12)
+        row = ttk.Frame(order); row.pack(fill="x", padx=8, pady=(4, 8))
+        self.order_btn = ttk.Button(row, text="Sipariş Kesimi Oluştur", command=self._order_cut)
+        self.order_btn.pack(side="left")
+        ttk.Button(row, text="Sipariş Klasörünü Aç", command=self._open_orders).pack(side="left", padx=8)
 
         # ---- result summary -----------------------------------------------
         # A batch (folder input) run prints one line per file in the log, but
@@ -505,10 +519,6 @@ class CncPrepGUI(tk.Tk):
         args += ["--floating", self.floating_var.get()]
         args += ["--thicken-mode", self.thicken_mode_var.get()]
         args += ["--tip-policy", self.tip_policy_var.get()]
-        if self.screw_holes.get() not in ("", "0"):
-            args += ["--screw-holes", self.screw_holes.get()]
-            if self.screw_hole_mm.get():
-                args += ["--screw-hole-mm", self.screw_hole_mm.get()]
 
         if self.work_res.get():
             args += ["--work-res", self.work_res.get()]
@@ -603,6 +613,7 @@ class CncPrepGUI(tk.Tk):
         self.dry_run_btn.configure(state=state)
         self.suggest_btn.configure(state=state)
         self.kit_btn.configure(state=state)
+        self.order_btn.configure(state=state)
         self.cancel_btn.configure(state=("normal" if running else "disabled"))
         self.status_var.set("çalışıyor..." if running else "hazır")
 
@@ -684,12 +695,56 @@ class CncPrepGUI(tk.Tk):
         if root is None:
             messagebox.showinfo("Cut-Ready", "Önce bir çıktı klasörü seç.")
             return
-        slug = "".join(c if c.isalnum() else "-" for c in self.kit_name_var.get().strip().lower()).strip("-")
-        while "--" in slug:
-            slug = slug.replace("--", "-")
+        slug = self._kit_slug()
         target = root / slug if slug and (root / slug).exists() else root
         if not target.exists():
             messagebox.showinfo("Cut-Ready", "Henüz kit oluşturulmamış.")
+            return
+        open_in_file_manager(target)
+
+    def _kit_slug(self) -> str:
+        slug = "".join(c if c.isalnum() else "-" for c in self.kit_name_var.get().strip().lower()).strip("-")
+        while "--" in slug:
+            slug = slug.replace("--", "-")
+        return slug
+
+    def _order_cut(self):
+        if self.proc is not None:
+            messagebox.showinfo("Cut-Ready", "Zaten bir işlem çalışıyor.")
+            return
+        inp = self.input_var.get().strip()
+        if not inp or not Path(inp).is_file():
+            messagebox.showerror("Cut-Ready", "Girdi'de siparişin tasarım dosyasını seç (listing kitindekiyle aynı).")
+            return
+        root = self._kit_root()
+        if root is None:
+            messagebox.showerror("Cut-Ready", "Çıktı klasörü seçmelisin; sipariş kits/<tasarım-adı>/orders/ altına yazılır.")
+            return
+        name, sku, width = self.kit_name_var.get().strip(), self.order_sku.get(), self.order_width.get()
+        if not name or not sku or not width:
+            messagebox.showerror("Cut-Ready", "Tasarım adı (kit bölümünde), listing SKU'su ve genişlik (cm) gerekli.")
+            return
+        args = ["-i", inp, "-o", str(root), "--name", name, "--sku", sku, "--order-width-cm", width]
+        if self.screw_holes.get() not in ("", "0"):
+            args += ["--screw-holes", self.screw_holes.get()]
+            if self.screw_hole_mm.get():
+                args += ["--screw-hole-mm", self.screw_hole_mm.get()]
+        if self.min_thickness.get():
+            args += ["--min-thickness-mm", self.min_thickness.get()]
+        if self.kerf_mm.get():
+            args += ["--kerf-mm", self.kerf_mm.get()]
+        if self.simplify_mm.get():
+            args += ["--simplify-mm", self.simplify_mm.get()]
+        self._last_job_kind = "order"
+        cmd = [find_python(), str(KIT_SCRIPT)] + args
+        self._log(f"\n$ {' '.join(cmd)}\n")
+        self._launch(cmd, is_suggest=False)
+
+    def _open_orders(self):
+        root = self._kit_root()
+        target = root / self._kit_slug() / "orders" if root and self._kit_slug() else None
+        if target is None or not target.exists():
+            messagebox.showinfo("Cut-Ready", "Bu tasarım için henüz sipariş kesimi yok.")
             return
         open_in_file_manager(target)
 
