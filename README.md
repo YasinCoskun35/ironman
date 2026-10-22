@@ -157,10 +157,13 @@ kesimde inceldiği için reddedilen çizgi kalmaz.
 
 **Vida deliği (müşteri "screw hole" montaj seçtiyse):** Yapısal ayarlardaki **Vida deliği adedi**'ne
 `-1` yaz (ene göre otomatik: 60 cm'e kadar 2, 120 cm'e kadar 3, üstü 4) ya da istediğin sayıyı;
-**Delik çapı** varsayılan 5 mm. Delikler enine yayılır ve her biri o bölgedeki en geniş metalin
-ortasına, etrafında bir delik çapı kadar metal kalacak şekilde konur (yoksa en az min kalınlık).
-Konumlar Kayıt penceresinde `vida deliği: 4 x 5.0mm @ (154, 355), ...` diye yazar; sığmayan olursa
-uyarı verir. Adet her açılışta 0'dan başlar, delikler sadece istendiği siparişte eklenir.
+**Delik çapı** varsayılan 5 mm. Delikler **ağırlık merkezine göre** konur: ağırlık merkezinden geçen
+dikey çizginin iki yanına simetrik (her vida eşit yük taşır, parça düz durur), çiftler aynı hizada,
+mümkünse ağırlık merkezinin üstünde (parça deliklerden sarkar, öne devrilmez). Her deliğin etrafında
+bir delik çapı kadar metal kalır (yoksa en az min kalınlık). Sağlam metal sadece aşağıdaysa (door
+topper'ın alt barı gibi) oraya konur ve uyarı yazar: vidayla sorun yok, çivi/kancada öne devrilir.
+Kayıt penceresi konumları ve ağırlık merkezini yazar: `vida deliği: 4 x 5.0mm @ (539, 355), ... |
+ağırlık merkezi (753, 320) mm`. Adet her açılışta 0'dan başlar, delikler sadece istendiği siparişte eklenir.
 Komut satırında: `--screw-holes -1 --screw-hole-mm 5`.
 
 ## Komut Satırı (CLI)
