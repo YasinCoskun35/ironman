@@ -155,6 +155,14 @@ EazyDemand gereksinimleri: PNG + DXF format, dosya < 3MB, en ince çizgi/delik �
 kalınlığı 1.8mm'e çeker: EazyDemand'ın 1.5mm sınırına tam oturmak yerine 0.3mm pay bırakır, böylece
 kesimde inceldiği için reddedilen çizgi kalmaz.
 
+**Vida deliği (müşteri "screw hole" montaj seçtiyse):** Yapısal ayarlardaki **Vida deliği adedi**'ne
+`-1` yaz (ene göre otomatik: 60 cm'e kadar 2, 120 cm'e kadar 3, üstü 4) ya da istediğin sayıyı;
+**Delik çapı** varsayılan 5 mm. Delikler enine yayılır ve her biri o bölgedeki en geniş metalin
+ortasına, etrafında bir delik çapı kadar metal kalacak şekilde konur (yoksa en az min kalınlık).
+Konumlar Kayıt penceresinde `vida deliği: 4 x 5.0mm @ (154, 355), ...` diye yazar; sığmayan olursa
+uyarı verir. Adet her açılışta 0'dan başlar, delikler sadece istendiği siparişte eklenir.
+Komut satırında: `--screw-holes -1 --screw-hole-mm 5`.
+
 ## Komut Satırı (CLI)
 
 Formu atlayıp doğrudan terminalden de çalıştırabilirsin:
