@@ -201,7 +201,9 @@ olur. Dosyalar `<kit>/orders/<SKU>_150x42cm_screw/` altına düşer.
 
 Arayüzden: Girdi'de tasarımı, kit bölümünde tasarım adını seç; **Sipariş Kesimi** bölümünde listing
 SKU'sunu, genişliği (cm) ve vida deliği adedini (`-1` otomatik, `0` yok) yaz, **Sipariş Kesimi
-Oluştur**'a bas. **Sipariş Klasörünü Aç** dosyaların olduğu yeri açar. Terminalden:
+Oluştur**'a bas. **Sipariş Klasörünü Aç** dosyaların olduğu yeri açar. Kayıt penceresi görünümün
+korunup korunmadığını yazar (`görünüm korundu ...` / `! GÖRÜNÜM DEĞİŞTİ ...`, `DXF çizgisi tasarımla
+örtüşüyor ...`); klasördeki `_preview.png` onarılan her yeri işaretler. Terminalden:
 
 ```bash
 .venv/bin/python3 listing_kit.py -i ./tasarim.png -o ./kits --name "Victorian Door Topper" --sku 2026101801 --order-width-cm 150 --screw-holes -1

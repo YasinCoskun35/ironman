@@ -352,6 +352,33 @@ def cut_sizes(src: Path, out: Path, sizes: List[Size], fw: float, overrides: Dic
     return reports
 
 
+def look_report(rep: Dict) -> List[str]:
+    """
+    Does the cut file still look like the listing? Two checks, in plain words:
+    the repairs (thickening, filled slots, trimmed tips) against the artwork,
+    and the exported DXF outline against the repaired shape.
+    """
+    if rep.get("status") == "failed":
+        return []
+    lines = []
+    dc = rep.get("design_change", {})
+    if dc.get("preserved", True):
+        lines.append(f"görünüm korundu: onarımlar metalin %{dc.get('changed_area_pct', 0)}'ini değiştirdi, "
+                     f"kapanan boşluk yok")
+    else:
+        lines.append(f"! GÖRÜNÜM DEĞİŞTİ: onarımlar metalin %{dc.get('changed_area_pct', 0)}'ini değiştirdi, "
+                     f"{dc.get('openings_lost', 0)}/{dc.get('openings_total', 0)} boşluk kapandı; "
+                     f"_preview.png'ye bak, bu ölçü tasarım için küçük")
+    iou = rep.get("vector", {}).get("topology", {}).get("iou")
+    if iou is not None:
+        if iou >= 0.98:
+            lines.append(f"DXF çizgisi tasarımla örtüşüyor (%{iou * 100:.1f})")
+        else:
+            lines.append(f"! DXF çizgisi tasarımdan sapıyor (%{iou * 100:.1f} örtüşme): "
+                         f"Sadeleştirme'yi 0.05'e düşürüp tekrar çalıştır")
+    return lines
+
+
 def order_cut(src: Path, out_root: Path, name: str, sku: str, width_cm: float, overrides: Dict,
               log=print) -> Dict:
     """
@@ -366,6 +393,7 @@ def order_cut(src: Path, out_root: Path, name: str, sku: str, width_cm: float, o
     tag = f"{width_cm:g}x{height_cm:g}cm" + ("_screw" if holes else "")
     d = out_root / slugify(name) / "orders" / f"{sku}_{tag}"
     cfg = cut_config(width_cm * 10.0 / fw, overrides)
+    cfg.preview = True                      # _preview.png marks every repair against the artwork
     rep = cnc.process_file(src, d, cfg)
     outputs = []
     for p in map(Path, rep["outputs"]):
@@ -373,6 +401,8 @@ def order_cut(src: Path, out_root: Path, name: str, sku: str, width_cm: float, o
         p.replace(target)
         outputs.append(str(target))
     rep["outputs"] = outputs
+    for line in look_report(rep):
+        log(f"[order] {line}")
     for h in rep.get("screw_holes", {}).get("holes", []):
         log(f"[order] vida deliği {h['d_mm']} mm @ x={h['x_mm']:.0f} y={h['y_mm']:.0f} mm")
     for w in rep["warnings"]:

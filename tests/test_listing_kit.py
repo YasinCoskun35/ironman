@@ -105,12 +105,16 @@ def test_order_cut_puts_screw_holes_in_one_size(tmp_path):
         cv2.ellipse(img, (cx, 300), (110, 200), 0, 180, 360, 0, 8)
     src = tmp_path / "topper.png"
     cv2.imwrite(str(src), img)
+    logged = []
     rep = lk.order_cut(src, tmp_path / "kits", "Victorian Door Topper", "2026101801", 150,
-                       {"screw_holes": -1, "work_res": 2.0}, log=lambda *_: None)
+                       {"screw_holes": -1, "work_res": 2.0}, log=logged.append)
     assert rep["status"] != "failed", rep["errors"]
     assert rep["screw_holes"]["placed"] == 4
     names = [Path(o).name for o in rep["outputs"]]
     assert any(n.startswith("2026101801_150x") and n.endswith("cm_screw.dxf") for n in names)
+    assert any(n.endswith("_preview.png") for n in names)                 # repairs marked for a look
+    assert any("görünüm korundu" in l or "GÖRÜNÜM DEĞİŞTİ" in l for l in logged)
+    assert any("DXF çizgisi" in l for l in logged)
     xs = np.nonzero(img < 128)[1]
     ink_w = rep["size_mm"][0] * (xs.max() - xs.min() + 1) / img.shape[1]
     assert abs(ink_w - 1500) < 15                                    # the metal, not the canvas, is 150 cm
