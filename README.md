@@ -194,6 +194,14 @@ klasörde hazır.
 Oluştur**'a bas. Bitince **Kit Klasörünü Aç** seni doğrudan `<çıktı klasörü>/kits/<tasarım-adı>/`
 klasörüne götürür. Kesim dosyaları formdaki min kalınlık, kerf ve sadeleştirme değerleriyle üretilir.
 
+**Sipariş kesimi (ör. vida delikli tek beden):** Kiti baştan kurmadan, listingdeki ölçüde tek bir
+kesim dosyası çıkarır; genişlik metale uygulanır (tuvale değil), yani parça listingdeki ölçüyle aynı
+olur. Dosyalar `<kit>/orders/<SKU>_150x42cm_screw/` altına düşer:
+
+```bash
+.venv/bin/python3 listing_kit.py -i ./tasarim.png -o ./kits --name "Victorian Door Topper" --sku 2026101801 --order-width-cm 150 --screw-holes -1
+```
+
 **Terminalden:**
 
 ```bash
