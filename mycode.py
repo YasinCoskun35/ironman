@@ -219,14 +219,17 @@ class Config:
 
 def add_screw_holes(mask: np.ndarray, cfg: Config) -> Tuple[np.ndarray, Dict]:
     """
-    Punch screw holes for wall mounting where the metal is strongest.
+    Punch screw holes for wall mounting, balanced on the part's centre of mass.
 
-    Holes are spread across the width (2 up to 60 cm, 3 up to 120 cm, 4 above
-    when screw_holes is -1). Each hole goes to the column nearest its target x
-    that has room, at that column's deepest point, preferring the upper two
-    thirds; it must keep a ring of metal one hole-diameter wide around it, or at least the minimum
-    thickness if the design has no such spot. Placed before the kerf offset,
-    so the holes get the same compensation as every other cut.
+    The holes are mirrored about the vertical line through the centre of mass,
+    so each carries an equal share of the weight and the part hangs level, and
+    a pair always sits on one row. Above the centre of mass is preferred: the
+    part then hangs from the holes instead of pivoting over them. Where the
+    only solid metal is lower (a door topper's base bar) they go there and the
+    report flags it. Each hole keeps one hole diameter of metal around it, or
+    at least the minimum thickness. One hole goes straight above the centre of
+    mass; -1 picks 2, 3 or 4 by width (up to 60 cm, up to 120 cm, above).
+    Placed before the kerf offset, so the holes are compensated like any cut.
     """
     n = cfg.screw_holes
     info: Dict = {"requested": n, "holes": []}
@@ -234,49 +237,59 @@ def add_screw_holes(mask: np.ndarray, cfg: Config) -> Tuple[np.ndarray, Dict]:
         return mask, info
     ys, xs = np.nonzero(mask)
     x0, x1, y0, y1 = int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max())
-    width_px, height_px = x1 - x0 + 1, y1 - y0 + 1
+    width_px = x1 - x0 + 1
     if n < 0:
         w_mm = width_px * cfg.mm_per_px
         n = 2 if w_mm <= 600 else 3 if w_mm <= 1200 else 4
     info["requested"] = n
-    fracs = {1: [0.5], 2: [0.12, 0.88], 3: [0.10, 0.50, 0.90],
-             4: [0.08, 0.36, 0.64, 0.92]}.get(n) or list(np.linspace(0.08, 0.92, n))
+    m = cv2.moments(mask, binaryImage=True)
+    cx, cy = m["m10"] / m["m00"], m["m01"] / m["m00"]
+    info["center_of_mass_mm"] = [round(cx * cfg.mm_per_px, 1), round(cy * cfg.mm_per_px, 1)]
+    reach = min(cx - x0, x1 - cx)                       # how far a mirrored pair can spread
+    # 0 = one hole on the centre line, f > 0 = a pair at cx -/+ f * reach
+    offsets = {1: [0.0], 2: [0.8], 3: [0.0, 0.85], 4: [0.3, 0.85]}.get(n) \
+        or ([0.0] if n % 2 else []) + list(np.linspace(0.3, 0.85, n // 2))
     r = cfg.px(cfg.screw_hole_mm / 2.0)
     dt = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-    upper = y0 + int(height_px * 2 / 3)
-    min_apart = 0.1 * width_px
+    step = max(1, int(0.005 * width_px))
+    min_apart = 0.08 * width_px
     out = mask.copy()
     placed: List[Tuple[int, int]] = []
 
-    def spot(tx: float):
+    def place(f: float):
         for margin_mm in (cfg.screw_hole_mm, max(cfg.min_thickness_mm, 3.0)):
             need = r + cfg.px(margin_mm)
-            for band in (0.06, 0.12, 0.20):
-                lo = int(max(x0, tx - band * width_px))
-                hi = int(min(x1, tx + band * width_px)) + 1
-                for ylim in (upper, y1 + 1):
-                    win = dt[y0:ylim, lo:hi]
-                    if win.size == 0:
+            for k in range(int(0.15 * width_px / step) + 1):
+                for sign in ((1,) if k == 0 else (1, -1)):
+                    if f == 0:
+                        cols = [int(round(cx + sign * k * step))]
+                    else:
+                        d = f * reach + sign * k * step
+                        if d < min_apart / 2:
+                            continue
+                        cols = [int(round(cx - d)), int(round(cx + d))]
+                    if any(c < x0 or c > x1 for c in cols) or \
+                            any(abs(c - px) < min_apart for c in cols for px, _ in placed):
                         continue
-                    # nearest column to the target that has room, at its deepest point
-                    deepest, rows = win.max(axis=0), win.argmax(axis=0)
-                    cols = np.nonzero(deepest >= need)[0]
-                    cols = [c for c in cols if all(abs(c + lo - px) > min_apart for px, _ in placed)]
-                    if not cols:
+                    # the row where every hole of the group has room, strongest metal first
+                    room = np.min(np.stack([dt[y0:y1 + 1, c] for c in cols]), axis=0)
+                    rows = np.nonzero(room >= need)[0]
+                    if not rows.size:
                         continue
-                    c = min(cols, key=lambda c: abs(c + lo - tx))
-                    return int(c) + lo, int(rows[c]) + y0, margin_mm
-        return None
+                    above = rows[rows + y0 < cy]
+                    pick = above if above.size else rows
+                    row = int(pick[np.argmax(room[pick])]) + y0
+                    return [(c, row) for c in cols], margin_mm
+        return None, None
 
-    for f in fracs:
-        found = spot(x0 + f * width_px)
-        if found is None:
-            continue
-        hx, hy, margin_mm = found
-        placed.append((hx, hy))
-        cv2.circle(out, (hx, hy), max(1, int(round(r))), 0, -1, lineType=cv2.LINE_8)
-        info["holes"].append({"x_mm": round(hx * cfg.mm_per_px, 1), "y_mm": round(hy * cfg.mm_per_px, 1),
-                              "d_mm": cfg.screw_hole_mm, "metal_around_mm": round(margin_mm, 1)})
+    for f in offsets:
+        spots, margin_mm = place(f)
+        for hx, hy in spots or []:
+            placed.append((hx, hy))
+            cv2.circle(out, (hx, hy), max(1, int(round(r))), 0, -1, lineType=cv2.LINE_8)
+            info["holes"].append({"x_mm": round(hx * cfg.mm_per_px, 1), "y_mm": round(hy * cfg.mm_per_px, 1),
+                                  "d_mm": cfg.screw_hole_mm, "metal_around_mm": round(margin_mm, 1),
+                                  "above_center_of_mass": bool(hy < cy)})
     info["placed"] = len(info["holes"])
     return out, info
 
@@ -2498,6 +2511,10 @@ def process_file(src: Path, out_dir: Path, cfg: Config) -> Dict:
             report["warnings"].append(
                 f"only {screw_info.get('placed', 0)} of {screw_info['requested']} screw holes fit: the design "
                 f"has no metal wide enough for a {cfg.screw_hole_mm} mm hole elsewhere — add a solid tab or bar")
+        if any(not h["above_center_of_mass"] for h in screw_info.get("holes", [])):
+            report["warnings"].append(
+                "some screw holes sit below the centre of mass (the only solid metal there): fine for "
+                "screws, but on nails or hooks the part would tip forward — add a solid tab higher up")
         if float_info.get("bridge_cap_hit"):
             report["warnings"].append(
                 f"more islands than --max-bridges ({cfg.max_bridges}); some remain unbridged")
@@ -2823,8 +2840,10 @@ def log_result(rep: Dict, quiet: bool) -> None:
           f"{rep['elapsed_s']}s")
     holes = rep.get("screw_holes", {}).get("holes", [])
     if holes:
+        com = rep["screw_holes"].get("center_of_mass_mm", [0, 0])
         print(f"       vida deliği: {len(holes)} x {holes[0]['d_mm']}mm @ "
-              + ", ".join(f"({h['x_mm']:.0f}, {h['y_mm']:.0f})" for h in holes) + " mm")
+              + ", ".join(f"({h['x_mm']:.0f}, {h['y_mm']:.0f})" for h in holes)
+              + f" mm  | ağırlık merkezi ({com[0]:.0f}, {com[1]:.0f}) mm")
     for w in rep["warnings"]:
         print(f"       ! {w}")
 
